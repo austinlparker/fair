@@ -1,0 +1,84 @@
+# Local sandbox PDS for fair.
+#
+# How it works:
+#   - The PDS runs at PDS_HOSTNAME=pds.localtest.me:8443. localtest.me is
+#     a public DNS entry that always resolves to 127.0.0.1, so this
+#     hostname lives entirely on your laptop while not triggering the
+#     PDS's loopback-rejection in OAuth URL validation.
+#   - Caddy terminates TLS using mkcert-issued certs that the OS trust
+#     store accepts (after `sudo mkcert -install` once).
+#   - The fair CLI talks to https://pds.localtest.me:8443 like a real PDS.
+#
+# Bring up:    sandbox/seed.sh
+# Tear down:   docker compose -f sandbox/compose.yaml --env-file sandbox/.env down
+# Wipe data:   sandbox/reset.sh
+
+name: fair-sandbox
+
+services:
+  pds:
+    container_name: fair-sandbox-pds
+    image: ghcr.io/bluesky-social/pds:0.4
+    restart: unless-stopped
+    expose:
+      - "3000" # internal only — Caddy routes to it
+    environment:
+      # Required.
+      # PDS_HOSTNAME has no port — the haileyok OAuth client library
+      # rejects auth-server issuer URLs that carry a port (Validate() in
+      # types.go). Caddy listens on 443 to match.
+      PDS_HOSTNAME: "pds.localtest.me"
+      PDS_JWT_SECRET: ${PDS_JWT_SECRET}
+      PDS_ADMIN_PASSWORD: ${PDS_ADMIN_PASSWORD}
+      PDS_PLC_ROTATION_KEY_K256_PRIVATE_KEY_HEX: ${PDS_PLC_ROTATION_KEY_K256_PRIVATE_KEY_HEX}
+
+      # Local-dev convenience.
+      PDS_INVITE_REQUIRED: "false"
+      PDS_RATE_LIMITS_ENABLED: "false"
+      PDS_BLOB_UPLOAD_LIMIT: "5242880" # 5MB
+      PDS_DATA_DIRECTORY: "/pds"
+      PDS_BLOBSTORE_DISK_LOCATION: "/pds/blocks"
+      # Allow handles like alice.pds.localtest.me. Without this, only
+      # full-DID logins work; goat account create requires a handle.
+      PDS_SERVICE_HANDLE_DOMAINS: ".pds.localtest.me"
+      # PDS uses pino; enable logging to stdout so docker logs shows
+      # request errors during sandbox debugging.
+      LOG_ENABLED: "true"
+      LOG_LEVEL: "debug"
+
+      # PLC: still talks to the public directory for DID generation.
+      # If you want fully-offline mode, run a local PLC mirror and override.
+      PDS_DID_PLC_URL: "https://plc.directory"
+
+      # AppView intentionally unset — sandbox doesn't federate.
+    volumes:
+      - pds_data:/pds
+    networks:
+      - sandbox
+
+  caddy:
+    container_name: fair-sandbox-caddy
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      # Standard 443. Required because the OAuth library forbids ports
+      # in the auth-server issuer URL. Container's internal Caddy also
+      # listens on 443; Docker maps host:443 -> container:443.
+      - "443:443"
+    depends_on:
+      - pds
+    volumes:
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./caddy/certs:/etc/caddy/certs:ro
+      # Bind sandbox/public into the container so Caddy can serve the
+      # OAuth client metadata document at /.well-known/oauth-client-metadata.json
+      # (the auth server fetches this URL during the OAuth handshake).
+      - ./public:/srv:ro
+    networks:
+      - sandbox
+
+networks:
+  sandbox:
+
+volumes:
+  pds_data:

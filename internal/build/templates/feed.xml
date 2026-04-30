@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+<title>{{.Publication.Name}}</title>
+<link href="{{.Publication.URL}}/"/>
+<link rel="self" href="{{.Publication.URL}}/feed.xml"/>
+<id>{{.Publication.URL}}/</id>
+<updated>{{.GeneratedAt.Format "2006-01-02T15:04:05Z07:00"}}</updated>
+{{range .Posts}}<entry>
+<title>{{.Title}}</title>
+<link href="{{$.Publication.URL}}{{.Path}}/"/>
+<id>{{$.Publication.URL}}{{.Path}}/</id>
+<published>{{.PublishedAt.Format "2006-01-02T15:04:05Z07:00"}}</published>
+{{if not .UpdatedAt.IsZero}}<updated>{{.UpdatedAt.Format "2006-01-02T15:04:05Z07:00"}}</updated>{{end}}
+{{if .Description}}<summary>{{.Description}}</summary>{{end}}
+<content type="html"><![CDATA[{{.HTMLBody}}]]></content>
+</entry>
+{{end}}</feed>

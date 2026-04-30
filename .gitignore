@@ -1,0 +1,26 @@
+# Build output
+/dist/
+/dist.*/
+/fair
+/cmd/fair/fair
+
+# Local state
+/.fair/
+
+# Sandbox runtime
+/sandbox/.env
+/sandbox/sandbox.pid
+/sandbox/public/
+/sandbox/caddy/certs/
+/images-mirror.*/
+
+# Editor / OS
+.DS_Store
+*.swp
+.idea/
+.vscode/
+
+# Go
+*.test
+*.out
+coverage.txt

@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Tags — {{.Publication.Name}}</title>
+<link rel="canonical" href="{{.Publication.URL}}/tags/">
+
+{{range .Publication.SocialLinks}}<link rel="me" href="{{.}}">
+{{end}}{{if .Publication.FaviconPath}}<link rel="icon" href="{{.Publication.FaviconPath}}">{{end}}
+</head>
+<body>
+<header>
+<h1>Tags</h1>
+<p><a href="{{.Publication.URL}}/">← {{.Publication.Name}}</a></p>
+</header>
+{{if .Tags}}
+<ul>
+{{range .Tags}}<li><a href="{{$.Publication.URL}}/tags/{{.Name}}/">{{.Name}}</a> ({{.Count}})</li>
+{{end}}</ul>
+{{else}}
+<p>No tags yet.</p>
+{{end}}
+</body>
+</html>

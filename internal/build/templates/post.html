@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>{{.Title}} — {{.Publication.Name}}</title>
+{{if .Description}}<meta name="description" content="{{.Description}}">{{end}}
+<link rel="canonical" href="{{.AbsoluteURL}}">
+
+<meta property="og:title" content="{{.Title}}">
+<meta property="og:type" content="article">
+<meta property="og:url" content="{{.AbsoluteURL}}">
+<meta property="og:site_name" content="{{.Publication.Name}}">
+{{if .Description}}<meta property="og:description" content="{{.Description}}">{{end}}
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="{{.Title}}">
+{{if .Description}}<meta name="twitter:description" content="{{.Description}}">{{end}}
+
+<meta name="article:published_time" content="{{.PublishedAt.Format "2006-01-02T15:04:05Z07:00"}}">
+{{if not .UpdatedAt.IsZero}}<meta name="article:modified_time" content="{{.UpdatedAt.Format "2006-01-02T15:04:05Z07:00"}}">{{end}}
+{{range .Tags}}<meta name="article:tag" content="{{.}}">
+{{end}}
+
+{{range .Publication.SocialLinks}}<link rel="me" href="{{.}}">
+{{end}}{{if .Publication.FaviconPath}}<link rel="icon" href="{{.Publication.FaviconPath}}">{{end}}
+
+<link rel="alternate" type="application/atom+xml" title="{{.Publication.Name}}" href="{{.Publication.URL}}/feed.xml">
+<link rel="alternate" type="application/feed+json" title="{{.Publication.Name}}" href="{{.Publication.URL}}/feed.json">
+<link rel="alternate" type="application/rss+xml" title="{{.Publication.Name}}" href="{{.Publication.URL}}/rss.xml">
+<link rel="alternate" type="application/atproto+json" href="{{.ATURI}}">
+{{if .Prev}}<link rel="prev" href="{{.Prev.Path}}/" title="{{.Prev.Title}}">{{end}}
+{{if .Next}}<link rel="next" href="{{.Next.Path}}/" title="{{.Next.Title}}">{{end}}
+</head>
+<body>
+<article>
+<header>
+<h1>{{.Title}}</h1>
+<p><time datetime="{{.PublishedAt.Format "2006-01-02T15:04:05Z07:00"}}">{{.PublishedAt.Format "January 2, 2006"}}</time>{{if not .UpdatedAt.IsZero}} (updated {{.UpdatedAt.Format "January 2, 2006"}}){{end}}{{if .Tags}} &middot; {{range $i, $t := .Tags}}{{if $i}}, {{end}}<a href="{{$.Publication.URL}}/tags/{{$t}}/">{{$t}}</a>{{end}}{{end}}</p>
+</header>
+{{.HTMLBody}}
+<footer>
+{{if or .Prev .Next}}<nav>
+{{if .Prev}}<p>← Previous: <a href="{{.Prev.Path}}/">{{.Prev.Title}}</a></p>{{end}}
+{{if .Next}}<p>Next: <a href="{{.Next.Path}}/">{{.Next.Title}}</a> →</p>{{end}}
+</nav>{{end}}
+{{if .BskyPostURL}}<p><a href="{{.BskyPostURL}}">Discuss on Bluesky</a></p>{{end}}
+<p><a href="{{.Publication.URL}}/">← {{.Publication.Name}}</a></p>
+</footer>
+</article>
+</body>
+</html>

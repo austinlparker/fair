@@ -1,0 +1,44 @@
+# Caddy reverse proxy for the local sandbox PDS.
+#
+# Why: bluesky-social/pds:0.4 hardcodes https:// for its OAuth issuer URL
+# and rejects loopback hosts (127.0.0.1, localhost). We work around this
+# by giving the PDS a non-loopback hostname (pds.localtest.me, which
+# resolves publicly to 127.0.0.1) and terminating real TLS in front of
+# it via mkcert-issued certs that the OS trust store accepts.
+#
+# Port 443 (not 8443): the haileyok OAuth library's Validate() rejects
+# auth-server issuer URLs that carry a port. So Caddy must listen on the
+# default HTTPS port and the PDS_HOSTNAME has no port either.
+#
+# Generated certs are mounted at /etc/caddy/certs by sandbox/compose.yaml.
+# The OAuth client metadata document is served from /srv (mount of
+# sandbox/public) so the auth server can fetch it during login.
+
+{
+	auto_https disable_redirects
+	admin off
+	# Log access to stderr — useful for debugging PAR failures during
+	# OAuth login flow development. Remove once flow is stable.
+	log {
+		output stderr
+		format console
+		level INFO
+	}
+}
+
+pds.localtest.me {
+	tls /etc/caddy/certs/pds.localtest.me.pem /etc/caddy/certs/pds.localtest.me-key.pem
+
+	# Serve the OAuth client metadata document directly from disk so the
+	# PDS auth server can fetch it during the OAuth handshake. Order
+	# matters in Caddy: more-specific handle blocks beat the catch-all.
+	handle /.well-known/oauth-client-metadata.json {
+		root * /srv
+		file_server
+	}
+
+	# Everything else proxies to the PDS.
+	handle {
+		reverse_proxy pds:3000
+	}
+}

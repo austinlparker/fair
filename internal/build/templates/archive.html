@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Archive — {{.Publication.Name}}</title>
+<link rel="canonical" href="{{.Publication.URL}}/archive/">
+
+{{range .Publication.SocialLinks}}<link rel="me" href="{{.}}">
+{{end}}{{if .Publication.FaviconPath}}<link rel="icon" href="{{.Publication.FaviconPath}}">{{end}}
+</head>
+<body>
+<header>
+<h1>Archive</h1>
+<p><a href="{{.Publication.URL}}/">← {{.Publication.Name}}</a></p>
+</header>
+{{if .Years}}
+{{range .Years}}<section>
+<h2>{{.Year}}</h2>
+<ul>
+{{range .Posts}}<li><time datetime="{{.PublishedAt.Format "2006-01-02"}}">{{.PublishedAt.Format "Jan 2"}}</time> &mdash; <a href="{{.Path}}/">{{.Title}}</a></li>
+{{end}}</ul>
+</section>
+{{end}}{{else}}
+<p>No posts yet.</p>
+{{end}}
+</body>
+</html>

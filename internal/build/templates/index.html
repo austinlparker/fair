@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>{{.Publication.Name}}</title>
+{{if .Publication.Description}}<meta name="description" content="{{.Publication.Description}}">{{end}}
+<link rel="canonical" href="{{.Publication.URL}}/">
+
+<meta property="og:title" content="{{.Publication.Name}}">
+<meta property="og:type" content="website">
+<meta property="og:url" content="{{.Publication.URL}}/">
+<meta property="og:site_name" content="{{.Publication.Name}}">
+{{if .Publication.Description}}<meta property="og:description" content="{{.Publication.Description}}">{{end}}
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="{{.Publication.Name}}">
+{{if .Publication.Description}}<meta name="twitter:description" content="{{.Publication.Description}}">{{end}}
+
+{{range .Publication.SocialLinks}}<link rel="me" href="{{.}}">
+{{end}}{{if .Publication.FaviconPath}}<link rel="icon" href="{{.Publication.FaviconPath}}">{{end}}
+
+<link rel="alternate" type="application/atom+xml" title="{{.Publication.Name}}" href="{{.Publication.URL}}/feed.xml">
+<link rel="alternate" type="application/feed+json" title="{{.Publication.Name}}" href="{{.Publication.URL}}/feed.json">
+<link rel="alternate" type="application/rss+xml" title="{{.Publication.Name}}" href="{{.Publication.URL}}/rss.xml">
+</head>
+<body>
+<header>
+<h1>{{.Publication.Name}}</h1>
+{{if .Publication.Description}}<p>{{.Publication.Description}}</p>{{end}}
+</header>
+{{if .Posts}}
+<ul>
+{{range .Posts}}<li><time datetime="{{.PublishedAt.Format "2006-01-02"}}">{{.PublishedAt.Format "Jan 2 2006"}}</time> &mdash; <a href="{{.Path}}/">{{.Title}}</a></li>
+{{end}}</ul>
+{{else}}
+<p>No posts yet.</p>
+{{end}}
+<footer>
+<p><a href="{{.Publication.URL}}/feed.xml">Atom</a> &middot; <a href="{{.Publication.URL}}/feed.json">JSON Feed</a> &middot; <a href="{{.Publication.URL}}/rss.xml">RSS</a></p>
+</footer>
+</body>
+</html>

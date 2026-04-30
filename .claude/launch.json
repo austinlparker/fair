@@ -1,0 +1,31 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "sandbox-pds",
+      "runtimeExecutable": "docker",
+      "runtimeArgs": [
+        "compose",
+        "-f",
+        "sandbox/compose.yaml",
+        "--env-file",
+        "sandbox/.env",
+        "up"
+      ],
+      "port": 443,
+      "autoPort": false
+    },
+    {
+      "name": "dist-preview",
+      "runtimeExecutable": "python3",
+      "runtimeArgs": [
+        "-m",
+        "http.server",
+        "8000",
+        "--directory",
+        "dist.sandbox"
+      ],
+      "port": 8000
+    }
+  ]
+}

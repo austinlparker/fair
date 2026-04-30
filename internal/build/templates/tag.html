@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Posts tagged "{{.Tag}}" — {{.Publication.Name}}</title>
+<link rel="canonical" href="{{.Publication.URL}}/tags/{{.Tag}}/">
+
+<meta property="og:title" content="Posts tagged &quot;{{.Tag}}&quot; — {{.Publication.Name}}">
+<meta property="og:type" content="website">
+<meta property="og:url" content="{{.Publication.URL}}/tags/{{.Tag}}/">
+<meta property="og:site_name" content="{{.Publication.Name}}">
+
+{{range .Publication.SocialLinks}}<link rel="me" href="{{.}}">
+{{end}}{{if .Publication.FaviconPath}}<link rel="icon" href="{{.Publication.FaviconPath}}">{{end}}
+
+<link rel="alternate" type="application/atom+xml" title="{{.Publication.Name}}" href="{{.Publication.URL}}/feed.xml">
+</head>
+<body>
+<header>
+<h1>Posts tagged &ldquo;{{.Tag}}&rdquo;</h1>
+<p><a href="{{.Publication.URL}}/tags/">All tags</a> &middot; <a href="{{.Publication.URL}}/">{{.Publication.Name}}</a></p>
+</header>
+<ul>
+{{range .Posts}}<li><time datetime="{{.PublishedAt.Format "2006-01-02"}}">{{.PublishedAt.Format "Jan 2 2006"}}</time> &mdash; <a href="{{.Path}}/">{{.Title}}</a></li>
+{{end}}</ul>
+</body>
+</html>
