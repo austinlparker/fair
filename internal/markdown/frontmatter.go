@@ -23,6 +23,7 @@ type Frontmatter struct {
 	Tags        []string `yaml:"tags,omitempty"`
 	Slug        string   `yaml:"slug,omitempty"`
 	Updated     string   `yaml:"updated,omitempty"`
+	BskyPost    string   `yaml:"bsky_post,omitempty"` // at-uri of an app.bsky.feed.post record; published as bskyPostRef StrongRef
 }
 
 // Split separates the optional YAML frontmatter (delimited by "---" lines)

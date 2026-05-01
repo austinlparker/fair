@@ -2,6 +2,12 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" media="(prefers-color-scheme: light)" content="#ffffff">
+<meta name="theme-color" media="(prefers-color-scheme: dark)" content="#1a1a1a">
+<style>body{max-width:720px;margin:0 auto;padding:1rem;font-family:system-ui,sans-serif;line-height:1.5}nav{text-align:center;font-size:0.875em}img{max-width:100%;height:auto}</style>
+<script type="speculationrules">{"prerender":[{"where":{"href_matches":"/*"},"eagerness":"moderate"}]}</script>
 <title>{{.Title}} — {{.Publication.Name}}</title>
 {{if .Description}}<meta name="description" content="{{.Description}}">{{end}}
 <link rel="canonical" href="{{.AbsoluteURL}}">
@@ -34,16 +40,91 @@
 <article>
 <header>
 <h1>{{.Title}}</h1>
-<p><time datetime="{{.PublishedAt.Format "2006-01-02T15:04:05Z07:00"}}">{{.PublishedAt.Format "January 2, 2006"}}</time>{{if not .UpdatedAt.IsZero}} (updated {{.UpdatedAt.Format "January 2, 2006"}}){{end}}{{if .Tags}} &middot; {{range $i, $t := .Tags}}{{if $i}}, {{end}}<a href="{{$.Publication.URL}}/tags/{{$t}}/">{{$t}}</a>{{end}}{{end}}</p>
+<p><small><time datetime="{{.PublishedAt.Format "2006-01-02T15:04:05Z07:00"}}">{{.PublishedAt.Format "January 2, 2006"}}</time>{{if not .UpdatedAt.IsZero}} (updated {{.UpdatedAt.Format "January 2, 2006"}}){{end}}{{if .ReadingMinutes}} &middot; {{.ReadingMinutes}} min read{{end}}{{if .Tags}} &middot; {{range $i, $t := .Tags}}{{if $i}}, {{end}}<a href="{{$.Publication.URL}}/tags/{{$t}}/">{{$t}}</a>{{end}}{{end}}{{if .PdsLsURL}} &middot; <a href="{{.PdsLsURL}}" title="View source record on pdsls.dev"><code>at://</code></a>{{end}}</small></p>
 </header>
 {{.HTMLBody}}
+{{if .BskyPostAtURI}}<section id="comments">
+<h2>Comments</h2>
+<p><small>Replies from the <a href="{{.BskyPostURL}}">Bluesky thread</a>.<noscript> (Enable JavaScript to load replies inline; the link works without it.)</noscript></small></p>
+<ol id="comments-list"></ol>
+<p id="comments-empty"><small>No replies yet — <a href="{{.BskyPostURL}}">be the first to reply on Bluesky</a>.</small></p>
+</section>
+<script>
+(function() {
+  var atUri = {{.BskyPostAtURI}};
+  var url = "https://public.api.bsky.app/xrpc/app.bsky.feed.getPostThread?depth=6&uri=" + encodeURIComponent(atUri);
+  var list = document.getElementById("comments-list");
+  if (!list) return;
+  function permalinkFor(uri, handle) {
+    var m = /^at:\/\/[^/]+\/app\.bsky\.feed\.post\/([^/]+)$/.exec(uri || "");
+    if (!m) return null;
+    return "https://bsky.app/profile/" + encodeURIComponent(handle) + "/post/" + encodeURIComponent(m[1]);
+  }
+  fetch(url).then(function(r) { return r.ok ? r.json() : null; }).then(function(data) {
+    if (!data || !data.thread || !data.thread.replies || !data.thread.replies.length) return;
+    var empty = document.getElementById("comments-empty");
+    if (empty) empty.style.display = "none";
+    function render(replies, parent) {
+      replies.forEach(function(reply) {
+        if (!reply || !reply.post || !reply.post.author || !reply.post.record) return;
+        var post = reply.post;
+        var author = post.author;
+        var li = document.createElement("li");
+        var meta = document.createElement("p");
+        var small = document.createElement("small");
+        if (author.avatar) {
+          var img = document.createElement("img");
+          img.src = author.avatar;
+          img.alt = "";
+          img.width = 20;
+          img.height = 20;
+          img.loading = "lazy";
+          img.style.borderRadius = "50%";
+          small.appendChild(img);
+          small.appendChild(document.createTextNode(" "));
+        }
+        var profile = document.createElement("a");
+        profile.href = "https://bsky.app/profile/" + encodeURIComponent(author.handle);
+        profile.textContent = "@" + author.handle;
+        small.appendChild(profile);
+        if (post.record.createdAt) {
+          small.appendChild(document.createTextNode(" · "));
+          var d = new Date(post.record.createdAt);
+          var t = document.createElement("time");
+          t.dateTime = post.record.createdAt;
+          t.textContent = isNaN(d) ? post.record.createdAt : d.toLocaleDateString();
+          small.appendChild(t);
+        }
+        var permalink = permalinkFor(post.uri, author.handle);
+        if (permalink) {
+          small.appendChild(document.createTextNode(" · "));
+          var plink = document.createElement("a");
+          plink.href = permalink;
+          plink.title = "View on Bluesky";
+          plink.setAttribute("aria-label", "View this reply on Bluesky");
+          plink.textContent = "↗";
+          small.appendChild(plink);
+        }
+        meta.appendChild(small);
+        li.appendChild(meta);
+        var body = document.createElement("p");
+        body.textContent = post.record.text || "";
+        li.appendChild(body);
+        if (reply.replies && reply.replies.length) {
+          var ol = document.createElement("ol");
+          render(reply.replies, ol);
+          li.appendChild(ol);
+        }
+        parent.appendChild(li);
+      });
+    }
+    render(data.thread.replies, list);
+  }).catch(function() { /* silent fail; the link in the heading still works */ });
+})();
+</script>
+{{end}}
 <footer>
-{{if or .Prev .Next}}<nav>
-{{if .Prev}}<p>← Previous: <a href="{{.Prev.Path}}/">{{.Prev.Title}}</a></p>{{end}}
-{{if .Next}}<p>Next: <a href="{{.Next.Path}}/">{{.Next.Title}}</a> →</p>{{end}}
-</nav>{{end}}
-{{if .BskyPostURL}}<p><a href="{{.BskyPostURL}}">Discuss on Bluesky</a></p>{{end}}
-<p><a href="{{.Publication.URL}}/">← {{.Publication.Name}}</a></p>
+<nav>{{if .Prev}}<a href="{{.Prev.Path}}/" rel="prev">← Previous</a> · {{end}}<a href="{{.Publication.URL}}/">{{.Publication.Name}}</a>{{if .Next}} · <a href="{{.Next.Path}}/" rel="next">Next →</a>{{end}}</nav>
 </footer>
 </article>
 </body>

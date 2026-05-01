@@ -22,6 +22,14 @@ your site does.
   available.
 - **Pure HTML output.** Semantic markup, native widgets (`<details>`,
   `<progress>`, `<meter>`, `<figure>`, etc.), browser default styling.
+  The only CSS shipped is a two-rule inline block — one constrains the
+  reading column to ~720px on desktop, one keeps images from overflowing
+  it. No stylesheet, no framework, no design system; everything else
+  uses browser defaults.
+- **Responsive images.** `fair publish` generates resized variants
+  (480/960/1440/1920) alongside each inline image; rendered HTML emits
+  `srcset` + `sizes` so phones fetch a small variant and big screens
+  fetch a sharp one.
 - **Native widgets:**
   [demo article](https://aparker.io/html-feature-demo/) shows
   what's possible with no CSS or JS.
@@ -30,19 +38,21 @@ your site does.
 - **Alternate formats:** Atom + RSS 2.0 + JSON Feed + `index.json` +
   `sitemap.xml` + `robots.txt`, all generated.
 - **Tag pages, archive page, prev/next navigation** between posts.
+- **Year-grouped home page** with native `<details>` disclosures; current
+  year expanded by default.
+- **Optional home-page intro:** drop `_index.md` in your blog-posts
+  directory and it renders above the year disclosures.
 - **Local sandbox** for end-to-end testing without touching prod
   (Caddy + mkcert + `pds.localtest.me` + a real PDS Docker container).
 - **Operational tools:** `ls` (PDS-vs-local diff), `doctor` (health
-  checks), `unpublish`, `migrate cleanup-whtwnd`.
+  checks), `unpublish`.
 
 ## Status
 
-Alpha but feature-complete for single-author personal use. Replaces
-the Next.js + WhiteWind stack at `~/code/pds-blog`. See
+Alpha but feature-complete for single-author personal use. See
 [`docs/design-plans/2026-04-29-blog-v2026.md`](docs/design-plans/2026-04-29-blog-v2026.md)
-for the validated architecture and
-[`docs/runbook-cutover.md`](docs/runbook-cutover.md) for the
-production cutover steps.
+for the validated architecture (historical) and
+[`docs/runbook.md`](docs/runbook.md) for the first-deploy walkthrough.
 
 ## Quick start
 
@@ -60,7 +70,9 @@ publication_name  = "Your Blog"
 description       = "Tagline"
 blog_posts        = "/path/to/blog-posts"
 state_file        = ".fair/state.prod.json"
-images_mirror     = "images-mirror.prod/"
+# For prod, mirror lives inside the content repo so deploy CI can read
+# inline image bytes from a git clone (no PDS blob fetch for inline images).
+images_mirror     = "/path/to/blog-posts/images-mirror"
 dist_dir          = "dist/"
 social_links      = ["https://bsky.app/profile/handle.bsky.social"]
 EOF
@@ -76,6 +88,9 @@ wrangler pages deploy dist/
 
 # Publish a post
 ./fair --profile prod publish blog-posts/my-post/index.md
+
+# Persist the frontmatter id-write + any new images in images-mirror/
+( cd /path/to/blog-posts && git add . && git commit -m 'publish: my-post' && git push )
 
 # Render & deploy
 ./fair --profile prod build
@@ -96,7 +111,6 @@ wrangler pages deploy dist/
 | `ls` | Diff PDS records against local markdown |
 | `doctor` | Five-check health report |
 | `unpublish <rkey>` | Delete a `site.standard.document` record |
-| `migrate cleanup-whtwnd --yes` | Delete legacy WhiteWind records (one-time post-cutover) |
 | `config show` | Print loaded config for the active profile |
 
 Profile is **mandatory** — pass `--profile <name>` or set
@@ -145,11 +159,11 @@ internal/atproto/     # OAuth + XRPC client + session storage
 internal/build/       # PDS records → dist/ HTML rendering
 internal/config/      # TOML config + profile resolution
 internal/markdown/    # Normalize + frontmatter + hash + goldmark parser
-internal/ops/         # ls, doctor, unpublish, migrate
+internal/ops/         # ls, doctor, unpublish
 internal/publish/     # 13-step publish orchestrator + building blocks
 sandbox/              # Local PDS Docker compose + Caddy + scripts
 docs/design-plans/    # Validated architecture
-docs/runbook-cutover.md  # Production migration steps
+docs/runbook.md          # First-deploy runbook
 ```
 
 ## License

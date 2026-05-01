@@ -2,18 +2,24 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" media="(prefers-color-scheme: light)" content="#ffffff">
+<meta name="theme-color" media="(prefers-color-scheme: dark)" content="#1a1a1a">
+<style>body{max-width:720px;margin:0 auto;padding:1rem;font-family:system-ui,sans-serif;line-height:1.5}nav{text-align:center;font-size:0.875em}img{max-width:100%;height:auto}</style>
+<script type="speculationrules">{"prerender":[{"where":{"href_matches":"/*"},"eagerness":"moderate"}]}</script>
 <title>{{.Publication.Name}}</title>
-{{if .Publication.Description}}<meta name="description" content="{{.Publication.Description}}">{{end}}
+{{if or .HomeMeta.Description .Publication.Description}}<meta name="description" content="{{if .HomeMeta.Description}}{{.HomeMeta.Description}}{{else}}{{.Publication.Description}}{{end}}">{{end}}
 <link rel="canonical" href="{{.Publication.URL}}/">
 
 <meta property="og:title" content="{{.Publication.Name}}">
 <meta property="og:type" content="website">
 <meta property="og:url" content="{{.Publication.URL}}/">
 <meta property="og:site_name" content="{{.Publication.Name}}">
-{{if .Publication.Description}}<meta property="og:description" content="{{.Publication.Description}}">{{end}}
+{{if or .HomeMeta.Description .Publication.Description}}<meta property="og:description" content="{{if .HomeMeta.Description}}{{.HomeMeta.Description}}{{else}}{{.Publication.Description}}{{end}}">{{end}}
 <meta name="twitter:card" content="summary">
 <meta name="twitter:title" content="{{.Publication.Name}}">
-{{if .Publication.Description}}<meta name="twitter:description" content="{{.Publication.Description}}">{{end}}
+{{if or .HomeMeta.Description .Publication.Description}}<meta name="twitter:description" content="{{if .HomeMeta.Description}}{{.HomeMeta.Description}}{{else}}{{.Publication.Description}}{{end}}">{{end}}
 
 {{range .Publication.SocialLinks}}<link rel="me" href="{{.}}">
 {{end}}{{if .Publication.FaviconPath}}<link rel="icon" href="{{.Publication.FaviconPath}}">{{end}}
@@ -25,17 +31,35 @@
 <body>
 <header>
 <h1>{{.Publication.Name}}</h1>
+{{if .HomeMeta.Subtitle}}<p>{{.HomeMeta.Subtitle}}</p>{{end}}
 {{if .Publication.Description}}<p>{{.Publication.Description}}</p>{{end}}
 </header>
-{{if .Posts}}
+{{if .Intro}}<section>
+{{.Intro}}
+</section>
+{{end}}{{if .Featured}}<section>
+<h2>Featured</h2>
 <ul>
-{{range .Posts}}<li><time datetime="{{.PublishedAt.Format "2006-01-02"}}">{{.PublishedAt.Format "Jan 2 2006"}}</time> &mdash; <a href="{{.Path}}/">{{.Title}}</a></li>
+{{range .Featured}}<li><time datetime="{{.PublishedAt.Format "2006-01-02"}}">{{.PublishedAt.Format "Jan 2 2006"}}</time> &mdash; <a href="{{.Path}}/">{{.Title}}</a></li>
 {{end}}</ul>
-{{else}}
+</section>
+{{end}}{{if and (not .HideYears) .Years}}<h2>Posts</h2>
+{{range $i, $y := .Years}}<details{{if eq $i 0}} open{{end}}>
+<summary>{{$y.Year}} ({{len $y.Posts}} post{{if ne (len $y.Posts) 1}}s{{end}})</summary>
+<ul>
+{{range $y.Posts}}<li><time datetime="{{.PublishedAt.Format "2006-01-02"}}">{{.PublishedAt.Format "Jan 2"}}</time> &mdash; <a href="{{.Path}}/">{{.Title}}</a></li>
+{{end}}</ul>
+</details>
+{{end}}{{else if not .Years}}
 <p>No posts yet.</p>
+{{end}}{{if .Outro}}<section>
+{{.Outro}}
+</section>
 {{end}}
 <footer>
-<p><a href="{{.Publication.URL}}/feed.xml">Atom</a> &middot; <a href="{{.Publication.URL}}/feed.json">JSON Feed</a> &middot; <a href="{{.Publication.URL}}/rss.xml">RSS</a></p>
+{{if .Tags}}<h2>Tags</h2>
+<p>{{range $i, $t := .Tags}}{{if $i}} · {{end}}<a href="{{$.Publication.URL}}/tags/{{$t.Name}}/">{{$t.Name}}</a> ({{$t.Count}}){{end}}</p>{{end}}
+<nav><a href="{{.Publication.URL}}/archive/">Archive</a> · <a href="{{.Publication.URL}}/tags/">Tags</a> · <a href="{{.Publication.URL}}/feed.xml">Atom</a> · <a href="{{.Publication.URL}}/feed.json">JSON Feed</a> · <a href="{{.Publication.URL}}/rss.xml">RSS</a></nav>
 </footer>
 </body>
 </html>

@@ -12,6 +12,7 @@ import (
 	"io/fs"
 	texttemplate "text/template"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -20,6 +21,7 @@ import (
 
 	"aparker.io/fair/internal/atproto"
 	"aparker.io/fair/internal/markdown"
+	"gopkg.in/yaml.v3"
 )
 
 // Embedded templates. These ship inside the binary so the build flow
@@ -57,6 +59,12 @@ type Config struct {
 	// ImagesMirror: directory containing the staged inline images
 	// (populated by the publish flow). Copied into <DistDir>/images/.
 	ImagesMirror string
+
+	// BlogPosts: directory containing the markdown source. The build
+	// flow only reads one optional file from here — _index.md, used as
+	// a free-form intro on the home page. Posts themselves come from
+	// the PDS, not from this directory.
+	BlogPosts string
 
 	// DistDir: target output directory. Build writes to DistDir+".tmp"
 	// then atomically renames.
@@ -115,7 +123,13 @@ func Build(ctx context.Context, cfg Config) (*Result, error) {
 		return nil, fmt.Errorf("emit client metadata: %w", err)
 	}
 
-	httpClient := &http.Client{Timeout: 30 * time.Second}
+	httpClient := &http.Client{
+		Timeout: 30 * time.Second,
+		// Refuse to follow redirects from the PDS — XRPC endpoints don't
+		// redirect normally, and a hostile PDS could otherwise bounce us
+		// to an internal/metadata service on the build host (SSRF).
+		CheckRedirect: noRedirectPolicy,
+	}
 	if cfg.CAPool != nil {
 		httpClient.Transport = caTransport(cfg.CAPool)
 	}
@@ -179,6 +193,34 @@ func Build(ctx context.Context, cfg Config) (*Result, error) {
 			fmt.Fprintf(os.Stderr, "  skipping %s: %v\n", d.URI, err)
 			continue
 		}
+		// Defense in depth: PDS-controlled `path` field gets joined into
+		// the dist directory below. Reject anything that doesn't match
+		// the canonical slug shape rather than trust filepath.Join's
+		// .. cleaning to contain the path.
+		if !validRecordPath(pv.Path) {
+			fmt.Fprintf(os.Stderr, "  skipping %s: invalid path %q\n", d.URI, pv.Path)
+			continue
+		}
+		// Filter out tags whose names would escape tags/<name>/. Drop the
+		// invalid entries and keep the post.
+		if len(pv.Tags) > 0 {
+			kept := make([]string, 0, len(pv.Tags))
+			for _, t := range pv.Tags {
+				if validTagName(t) {
+					kept = append(kept, t)
+				} else {
+					fmt.Fprintf(os.Stderr, "  %s: dropping invalid tag %q\n", d.URI, t)
+				}
+			}
+			pv.Tags = kept
+		}
+		// Add srcset/sizes/width/height to <img> tags whose source has
+		// resized variants in the mirror. No-op when mirror is empty
+		// or when an image has no variants on disk.
+		body := EnrichResponsiveImages(string(pv.HTMLBody), cfg.ImagesMirror, cfg.PublicationURL)
+		// Add native lazy-loading + async decoding to all <img>.
+		body = EnhanceImages(body)
+		pv.HTMLBody = htmltemplate.HTML(body)
 		posts = append(posts, pv)
 	}
 
@@ -199,6 +241,47 @@ func Build(ctx context.Context, cfg Config) (*Result, error) {
 		}
 	}
 	siteData.Posts = posts
+	siteData.Years = groupByYear(posts)
+	intro, homeMetaFM, err := loadHomeContent(cfg.BlogPosts, siteData.Publication.URL)
+	if err != nil {
+		return nil, fmt.Errorf("load home content: %w", err)
+	}
+	siteData.Intro = intro
+	siteData.HomeMeta = homeMetaFM
+	siteData.HideYears = homeMetaFM.HideYears
+	// Resolve pinned slugs against posts for the Featured section.
+	if len(homeMetaFM.Pinned) > 0 {
+		bySlug := make(map[string]postView, len(posts))
+		for _, p := range posts {
+			bySlug[strings.TrimPrefix(p.Path, "/")] = p
+		}
+		for _, slug := range homeMetaFM.Pinned {
+			if p, ok := bySlug[slug]; ok {
+				siteData.Featured = append(siteData.Featured, p)
+			} else {
+				fmt.Fprintf(os.Stderr, "  warn: _index.md pinned slug %q not found among posts\n", slug)
+			}
+		}
+	}
+	outro, err := loadOutro(cfg.BlogPosts, siteData.Publication.URL)
+	if err != nil {
+		return nil, fmt.Errorf("load outro: %w", err)
+	}
+	siteData.Outro = outro
+
+	// Pre-compute tag summaries so they're available for the home-page
+	// template's tag cloud as well as the /tags/ index later in step 7.
+	tagsByName := groupByTag(posts)
+	tagNames := make([]string, 0, len(tagsByName))
+	for name := range tagsByName {
+		tagNames = append(tagNames, name)
+	}
+	sort.Strings(tagNames)
+	tagSummaries := make([]tagSummary, 0, len(tagNames))
+	for _, name := range tagNames {
+		tagSummaries = append(tagSummaries, tagSummary{Name: name, Count: len(tagsByName[name])})
+	}
+	siteData.Tags = tagSummaries
 
 	// Step 5: render per-post pages. documentToPostView leaves
 	// p.Publication.Name empty (it doesn't have access to the
@@ -250,20 +333,10 @@ func Build(ctx context.Context, cfg Config) (*Result, error) {
 		return nil, err
 	}
 
-	// Tag pages: one per distinct tag plus a /tags/ index. Tags are
-	// already canonicalized (lowercased, deduped) by the publish flow.
-	tagsByName := groupByTag(posts)
+	// Tag pages: one per distinct tag plus a /tags/ index. Summaries
+	// were precomputed earlier so siteData.Tags could be used by the
+	// home-page template; reuse them here.
 	if len(tagsByName) > 0 {
-		// /tags/ index
-		tagSummaries := make([]tagSummary, 0, len(tagsByName))
-		tagNames := make([]string, 0, len(tagsByName))
-		for name := range tagsByName {
-			tagNames = append(tagNames, name)
-		}
-		sort.Strings(tagNames)
-		for _, name := range tagNames {
-			tagSummaries = append(tagSummaries, tagSummary{Name: name, Count: len(tagsByName[name])})
-		}
 		if err := writeRendered(tmpOut, "tags/index.html", "tags-index.html", struct {
 			Publication publicationView
 			Tags        []tagSummary
@@ -404,7 +477,7 @@ type publicationView struct {
 	URL         string
 	Name        string
 	Description string
-	SocialLinks []string // <link rel="me"> entries
+	SocialLinks []string // raw URLs; emit as <link rel="me"> tags in the document head
 	FaviconPath string   // e.g. "/favicon.png"; empty when no icon blob
 }
 
@@ -414,26 +487,101 @@ type postNeighbor struct {
 }
 
 type postView struct {
-	Title       string
-	Path        string             // leading slash, no trailing slash
-	AbsoluteURL string             // publication.URL + path + "/"
-	ATURI       htmltemplate.URL   // at://did/site.standard.document/<rkey> (marked safe so html/template doesn't rewrite to #ZgotmplZ)
-	PublishedAt time.Time
-	UpdatedAt   time.Time
-	Lastmod     time.Time // = UpdatedAt or PublishedAt; precomputed for sitemap.xml
-	Description string
-	HTMLBody    htmltemplate.HTML
-	Tags        []string
-	BskyPostURL string // bsky.app web URL derived from bskyPostRef
-	Prev        *postNeighbor
-	Next        *postNeighbor
-	Publication publicationView // copied so post template can reach it
+	Title          string
+	Path           string             // leading slash, no trailing slash
+	AbsoluteURL    string             // publication.URL + path + "/"
+	ATURI          htmltemplate.URL   // at://did/site.standard.document/<rkey> (marked safe so html/template doesn't rewrite to #ZgotmplZ)
+	PdsLsURL       string             // https://pdsls.dev/at://... — web viewer for the canonical record
+	PublishedAt    time.Time
+	UpdatedAt      time.Time
+	Lastmod        time.Time // = UpdatedAt or PublishedAt; precomputed for sitemap.xml
+	Description    string
+	HTMLBody       htmltemplate.HTML
+	Tags           []string
+	BskyPostURL    string // bsky.app web URL derived from bskyPostRef
+	BskyPostAtURI  string // at-uri of the bsky discussion thread; used by the inline-JS comments fetch
+	ReadingMinutes int    // wordcount/250 rounded up, computed from markdown source body
+	Prev           *postNeighbor
+	Next           *postNeighbor
+	Publication    publicationView // copied so post template can reach it
 }
 
 type siteContext struct {
 	Publication publicationView
 	Posts       []postView
+	Years       []yearSection     // posts bucketed by publishedAt year, descending; used by the home page
+	Intro       htmltemplate.HTML // optional rendered _index.md body content shown above the year disclosures
+	Outro       htmltemplate.HTML // optional rendered _outro.md content shown below the year disclosures
+	Tags        []tagSummary      // alphabetical tag list; rendered as a footer cloud on the home page
+	HomeMeta    homeMeta          // optional frontmatter from _index.md driving home-only customization
+	Featured    []postView        // posts pinned via _index.md frontmatter, in declared order
+	HideYears   bool              // true when _index.md frontmatter sets `hide_years: true`
 	GeneratedAt time.Time
+}
+
+// homeMeta is the optional YAML frontmatter on _index.md. None of these
+// fields are required; missing file or missing fields fall back to the
+// publication record (description) or to default rendering.
+type homeMeta struct {
+	Description string   `yaml:"description"` // overrides Publication.Description on the home page only
+	Subtitle    string   `yaml:"subtitle"`    // extra <p> between <h1> and the intro body
+	Pinned      []string `yaml:"pinned"`      // slugs to render as a Featured section above year groups
+	HideYears   bool     `yaml:"hide_years"`  // suppress the year-group disclosures (e.g., for a fully-curated home)
+}
+
+// loadHomeContent reads <blogPostsDir>/_index.md if it exists, splits
+// optional YAML frontmatter from the markdown body, and renders the
+// body through the same goldmark + post-process pipeline used for posts.
+// Missing file → zero values, no error. Used by the home page for the
+// intro section + frontmatter-driven customization (subtitle, pinned,
+// description override, hide_years).
+func loadHomeContent(blogPostsDir, publicationURL string) (htmltemplate.HTML, homeMeta, error) {
+	if blogPostsDir == "" {
+		return "", homeMeta{}, nil
+	}
+	src, err := os.ReadFile(filepath.Join(blogPostsDir, "_index.md"))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", homeMeta{}, nil
+		}
+		return "", homeMeta{}, err
+	}
+	fmRaw, body, err := markdown.Split(string(src))
+	if err != nil {
+		return "", homeMeta{}, fmt.Errorf("_index.md frontmatter: %w", err)
+	}
+	var meta homeMeta
+	if fmRaw != "" {
+		if err := yaml.Unmarshal([]byte(fmRaw), &meta); err != nil {
+			return "", homeMeta{}, fmt.Errorf("_index.md frontmatter: %w", err)
+		}
+	}
+	html, err := RenderMarkdown(body, publicationURL)
+	if err != nil {
+		return "", homeMeta{}, err
+	}
+	return htmltemplate.HTML(html), meta, nil
+}
+
+// loadOutro reads <blogPostsDir>/_outro.md if it exists and renders it
+// through the markdown pipeline. Missing file → empty string, no error.
+// Rendered below the year groups + above the home-page footer.
+func loadOutro(blogPostsDir, publicationURL string) (htmltemplate.HTML, error) {
+	if blogPostsDir == "" {
+		return "", nil
+	}
+	body, err := os.ReadFile(filepath.Join(blogPostsDir, "_outro.md"))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", nil
+		}
+		return "", err
+	}
+	html, err := RenderMarkdown(string(body), publicationURL)
+	if err != nil {
+		return "", err
+	}
+	return htmltemplate.HTML(html), nil
 }
 
 // --- record fetching --------------------------------------------------------
@@ -453,8 +601,11 @@ type listRecordsResponse struct {
 // the record is absent (404 from getRecord). Other errors are returned
 // as-is.
 func fetchPublication(ctx context.Context, hc *http.Client, pdsURL, did string) (*publicationRecord, error) {
-	u := fmt.Sprintf("%s/xrpc/com.atproto.repo.getRecord?repo=%s&collection=site.standard.publication&rkey=self",
-		strings.TrimRight(pdsURL, "/"), did)
+	q := url.Values{}
+	q.Set("repo", did)
+	q.Set("collection", "site.standard.publication")
+	q.Set("rkey", "self")
+	u := strings.TrimRight(pdsURL, "/") + "/xrpc/com.atproto.repo.getRecord?" + q.Encode()
 	req, err := http.NewRequestWithContext(ctx, "GET", u, nil)
 	if err != nil {
 		return nil, err
@@ -504,11 +655,14 @@ func listAllDocuments(ctx context.Context, hc *http.Client, pdsURL, did string) 
 	var all []rawDocument
 	cursor := ""
 	for {
-		u := fmt.Sprintf("%s/xrpc/com.atproto.repo.listRecords?repo=%s&collection=site.standard.document&limit=100",
-			strings.TrimRight(pdsURL, "/"), did)
+		q := url.Values{}
+		q.Set("repo", did)
+		q.Set("collection", "site.standard.document")
+		q.Set("limit", "100")
 		if cursor != "" {
-			u += "&cursor=" + cursor
+			q.Set("cursor", cursor)
 		}
+		u := strings.TrimRight(pdsURL, "/") + "/xrpc/com.atproto.repo.listRecords?" + q.Encode()
 		req, err := http.NewRequestWithContext(ctx, "GET", u, nil)
 		if err != nil {
 			return nil, err
@@ -550,6 +704,7 @@ type rawDocumentValue struct {
 	} `json:"content"`
 	BskyPostRef *struct {
 		URI string `json:"uri"`
+		CID string `json:"cid"`
 	} `json:"bskyPostRef,omitempty"`
 }
 
@@ -596,26 +751,55 @@ func documentToPostView(d rawDocument, publicationURL string) (postView, error) 
 	atURI := d.URI
 
 	bskyPostURL := ""
-	if v.BskyPostRef != nil && v.BskyPostRef.URI != "" {
+	bskyPostAtURI := ""
+	if v.BskyPostRef != nil && v.BskyPostRef.URI != "" && validATURI(v.BskyPostRef.URI) {
 		if w, err := bskyWebURL(v.BskyPostRef.URI); err == nil {
 			bskyPostURL = w
 		}
+		bskyPostAtURI = v.BskyPostRef.URI
 	}
 
+	// at-uris pass through to <link rel="alternate"> via htmltemplate.URL
+	// (which normally allows arbitrary schemes). A compromised PDS could
+	// return uri: "javascript:..." otherwise — gate on the at:// prefix.
+	if !validATURI(atURI) {
+		return postView{}, fmt.Errorf("invalid at-uri %q", atURI)
+	}
 	return postView{
-		Title:       v.Title,
-		Path:        path,
-		AbsoluteURL: absoluteURL,
-		ATURI:       htmltemplate.URL(atURI),
-		PublishedAt: publishedAt,
-		UpdatedAt:   updatedAt,
-		Lastmod:     lastmod,
-		Description: v.Description,
-		HTMLBody:    htmltemplate.HTML(html),
-		Tags:        v.Tags,
-		BskyPostURL: bskyPostURL,
-		Publication: pub,
+		Title:          v.Title,
+		Path:           path,
+		AbsoluteURL:    absoluteURL,
+		ATURI:          htmltemplate.URL(atURI),
+		PdsLsURL:       "https://pdsls.dev/" + atURI,
+		PublishedAt:    publishedAt,
+		UpdatedAt:      updatedAt,
+		Lastmod:        lastmod,
+		Description:    v.Description,
+		HTMLBody:       htmltemplate.HTML(html),
+		Tags:           v.Tags,
+		BskyPostURL:    bskyPostURL,
+		BskyPostAtURI:  bskyPostAtURI,
+		ReadingMinutes: estimateReadingMinutes(v.Content.Text),
+		Publication:    pub,
 	}, nil
+}
+
+// estimateReadingMinutes returns ceil(wordcount / 250). 250 wpm is the
+// common middle-ground for adult silent reading; useful as a "how long
+// is this post going to take" hint, not an exact figure.
+func estimateReadingMinutes(body string) int {
+	words := len(strings.Fields(body))
+	if words == 0 {
+		return 0
+	}
+	mins := words / 250
+	if words%250 != 0 {
+		mins++
+	}
+	if mins < 1 {
+		mins = 1
+	}
+	return mins
 }
 
 // --- helpers ----------------------------------------------------------------

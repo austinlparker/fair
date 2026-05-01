@@ -39,6 +39,5 @@ func newRootCmd() *cobra.Command {
 	root.AddCommand(newLsCmd())
 	root.AddCommand(newUnpublishCmd())
 	root.AddCommand(newDoctorCmd())
-	root.AddCommand(newMigrateCmd())
 	return root
 }

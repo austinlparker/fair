@@ -21,6 +21,9 @@ func Canonical(fm Frontmatter) []byte {
 
 	// Keys appear alphabetically; missing/empty fields are omitted so the
 	// canonical output of `{Title: "X"}` doesn't carry empty defaults.
+	if fm.BskyPost != "" {
+		fmt.Fprintf(&b, "bsky_post: %s\n", fm.BskyPost)
+	}
 	if fm.Cover != "" {
 		fmt.Fprintf(&b, "cover: %s\n", fm.Cover)
 	}

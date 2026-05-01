@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"html"
 	"net"
 	"net/http"
 	"sync"
@@ -119,18 +120,20 @@ func (s *LoopbackServer) handleCallback(w http.ResponseWriter, r *http.Request) 
 	// to the terminal to see what happens next.
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if res.Error != "" {
+		// HTML-escape both fields — they come from the auth server's
+		// redirect query params and could otherwise reflect a script
+		// payload in the local browser tab.
+		desc := ""
+		if res.ErrorDescription != "" {
+			desc = ": " + html.EscapeString(res.ErrorDescription)
+		}
 		fmt.Fprintf(w,
 			`<!doctype html><title>Sign-in failed</title>
 <h1>Sign-in failed</h1>
 <p>%s%s</p>
 <p>You can close this tab and check the terminal.</p>`,
-			res.Error,
-			func() string {
-				if res.ErrorDescription != "" {
-					return ": " + res.ErrorDescription
-				}
-				return ""
-			}(),
+			html.EscapeString(res.Error),
+			desc,
 		)
 	} else {
 		fmt.Fprint(w, `<!doctype html><title>Signed in</title>

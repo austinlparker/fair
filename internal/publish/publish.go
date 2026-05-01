@@ -29,6 +29,14 @@ type Options struct {
 	// record even when nothing changed. Advances updatedAt.
 	Force bool
 
+	// Announce: when true and the post has no existing bsky_post
+	// frontmatter, create an app.bsky.feed.post on the user's repo
+	// linking to the article and store its at-uri+cid as bskyPostRef
+	// on the document record. The new at-uri also gets written back
+	// to the source frontmatter as bsky_post: so subsequent runs are
+	// idempotent (no duplicate announce posts).
+	Announce bool
+
 	// Logger receives operator-facing progress strings. nil silences output.
 	Logger func(format string, args ...any)
 }
@@ -49,6 +57,11 @@ type Config struct {
 	// PublicationURI: the publication record's AT-URI, e.g.
 	// at://did:plc:.../site.standard.publication/self.
 	PublicationURI string
+
+	// PublicationURL: the rendered site's absolute URL (no trailing
+	// slash), e.g. https://aparker.io. Used to construct article URLs
+	// for the --announce embed card.
+	PublicationURL string
 
 	// MaxCoverSize: byte cap on cover images. The site.standard.document
 	// spec recommends 1MB; we enforce it at the client because PDS may
@@ -158,7 +171,12 @@ func Publish(ctx context.Context, client *atproto.Client, sourcePath string, cfg
 		CoverSourceHash: coverHash,
 	})
 	prevEntry, hadEntry := state.Entries[slug]
-	if hadEntry && prevEntry.LastHash == hash && !opts.Force {
+	// --announce on a hash-unchanged post that's never been announced
+	// must NOT short-circuit: the announce flow needs to run, the
+	// document needs to be re-put with the new bskyPostRef, and the
+	// frontmatter needs to gain bsky_post:.
+	needsAnnounce := opts.Announce && fm.BskyPost == "" && !opts.DryRun
+	if hadEntry && prevEntry.LastHash == hash && !opts.Force && !needsAnnounce {
 		log("skip %s (hash unchanged)", slug)
 		return Result{
 			Rkey:    slug,
@@ -212,6 +230,58 @@ func Publish(ctx context.Context, client *atproto.Client, sourcePath string, cfg
 	}
 	if len(fm.Tags) > 0 {
 		record["tags"] = canonicalTags(fm.Tags)
+	}
+	if fm.BskyPost != "" {
+		// Resolve the at-uri to a CID and emit a strongRef per the
+		// standard.site lexicon. Own-repo lookups use the authed
+		// client (trusts our PDS, important for sandbox); external
+		// lookups hit the public Bluesky AppView.
+		cid, err := resolveBskyPostCID(ctx, fm.BskyPost, client)
+		if err != nil {
+			return Result{}, fmt.Errorf("bsky_post: %w", err)
+		}
+		record["bskyPostRef"] = map[string]any{
+			"uri": fm.BskyPost,
+			"cid": cid,
+		}
+	} else if opts.Announce && !opts.DryRun {
+		// No prior announce post; create one and pin it as the comment
+		// root. The new at-uri gets written back to frontmatter so
+		// re-runs short-circuit on this branch.
+		articleURL := strings.TrimRight(cfg.PublicationURL, "/") + "/" + slug + "/"
+		announceDesc := description
+		if announceDesc == "" {
+			announceDesc = fm.Title
+		}
+		log("announce app.bsky.feed.post → %s", articleURL)
+		announceURI, announceCID, err := Announce(ctx, client, AnnounceInput{
+			Title:       fm.Title,
+			Description: announceDesc,
+			URL:         articleURL,
+			CoverBlob:   coverBlob,
+		})
+		if err != nil {
+			return Result{}, fmt.Errorf("announce: %w", err)
+		}
+		record["bskyPostRef"] = map[string]any{
+			"uri": announceURI,
+			"cid": announceCID,
+		}
+		// Persist the new at-uri to the source markdown so subsequent
+		// publishes reuse it (idempotency) and so it appears in the
+		// authored frontmatter for everyone to see. Also update fm and
+		// recompute hash so the state save below stores the
+		// post-writeback hash; otherwise a no-flag re-publish would
+		// see "frontmatter changed" and unnecessarily re-put.
+		if err := writeBackBskyPost(sourcePath, announceURI); err != nil {
+			return Result{}, fmt.Errorf("write back bsky_post: %w", err)
+		}
+		fm.BskyPost = announceURI
+		hash = markdown.Hash(markdown.HashInput{
+			NormalizedBody:  rewrittenBody,
+			Frontmatter:     fm,
+			CoverSourceHash: coverHash,
+		})
 	}
 	updatedAtAdvanced := false
 	if hadEntry && prevEntry.LastHash != hash {

@@ -41,6 +41,7 @@ func newBuildCmd() *cobra.Command {
 				Description:     cfg.Description,
 				SocialLinks:     cfg.SocialLinks,
 				ImagesMirror:    cfg.ImagesMirror,
+				BlogPosts:       cfg.BlogPosts,
 				DistDir:         cfg.DistDir,
 				CAPool:          rootCAs,
 			})

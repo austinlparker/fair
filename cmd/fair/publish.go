@@ -65,6 +65,7 @@ func newPublishCmd() *cobra.Command {
 
 			dryRun, _ := cmd.Flags().GetBool("dry-run")
 			force, _ := cmd.Flags().GetBool("force")
+			announce, _ := cmd.Flags().GetBool("announce")
 			caBundle, _ := cmd.Flags().GetString("ca-bundle")
 
 			rootCAs, err := atproto.LoadExtraRoots(caBundle)
@@ -92,10 +93,12 @@ func newPublishCmd() *cobra.Command {
 				StateFile:      cfg.StateFile,
 				ImagesMirror:   cfg.ImagesMirror,
 				PublicationURI: pubURI,
+				PublicationURL: cfg.Domain,
 				MaxCoverSize:   1 << 20, // 1 MiB
 			}, publish.Options{
-				DryRun: dryRun,
-				Force:  force,
+				DryRun:   dryRun,
+				Force:    force,
+				Announce: announce,
 				Logger: func(format string, a ...any) {
 					fmt.Fprintf(cmd.OutOrStderr(), "  "+format+"\n", a...)
 				},
@@ -125,6 +128,7 @@ func newPublishCmd() *cobra.Command {
 	}
 	cmd.Flags().Bool("dry-run", false, "report what would happen without uploading or putting")
 	cmd.Flags().Bool("force", false, "re-put even when content hash is unchanged")
+	cmd.Flags().Bool("announce", false, "create an app.bsky.feed.post on first publish and pin it as bskyPostRef (the comment-thread root)")
 	cmd.Flags().String("ca-bundle", "", "PEM file containing extra trusted CAs (sandbox: mkcert root)")
 	return cmd
 }

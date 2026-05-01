@@ -118,6 +118,37 @@ func (c *Client) PutRecord(ctx context.Context, collection, rkey string, record 
 	return &out, nil
 }
 
+// CreateRecordInput models com.atproto.repo.createRecord input. Like
+// putRecord but the rkey is server-assigned (a TID). Used for records
+// where the operator doesn't have a stable identifier — most notably
+// app.bsky.feed.post when announcing a blog post.
+type CreateRecordInput struct {
+	Repo       string `json:"repo"`
+	Collection string `json:"collection"`
+	Rkey       string `json:"rkey,omitempty"`
+	Record     any    `json:"record"`
+	Validate   *bool  `json:"validate,omitempty"`
+}
+
+// CreateRecord creates a new record with a server-assigned rkey.
+// Returns the assigned URI+CID.
+func (c *Client) CreateRecord(ctx context.Context, collection string, record any) (*RecordRef, error) {
+	in := CreateRecordInput{
+		Repo:       c.session.DID,
+		Collection: collection,
+		Record:     record,
+	}
+	var out RecordRef
+	err := c.xrpc.Do(ctx, c.authedArgs(),
+		xrpc.Procedure, "application/json",
+		"com.atproto.repo.createRecord", nil, in, &out,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("createRecord: %w", err)
+	}
+	return &out, nil
+}
+
 // GetRecordOutput is the shape of com.atproto.repo.getRecord output.
 type GetRecordOutput struct {
 	URI   string          `json:"uri"`

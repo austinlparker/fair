@@ -34,9 +34,10 @@ const LoopbackRedirectPath = "/callback"
 //   - atproto — base scope (always required)
 //   - repo:site.standard.publication — read/write the publication singleton
 //   - repo:site.standard.document — read/write/delete posts
-//   - repo:com.whtwnd.blog.entry — for migration cleanup of legacy records
+//   - repo:app.bsky.feed.post — create the optional announce post (--announce)
+//     for the bsky_post / bskyPostRef discussion thread on each document
 //   - blob — upload cover images
-const BlogScopes = "atproto repo:site.standard.publication repo:site.standard.document repo:com.whtwnd.blog.entry blob"
+const BlogScopes = "atproto repo:site.standard.publication repo:site.standard.document repo:app.bsky.feed.post blob"
 
 // LoopbackClientID builds an ATProto-compliant loopback client_id of the
 // form http://localhost?scope=...&redirect_uri=http%3A%2F%2F127.0.0.1%2F<path>.

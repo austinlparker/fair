@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"aparker.io/fair/internal/images"
 )
 
 // RewriteImages finds inline images in the markdown body, copies their
@@ -104,6 +106,12 @@ func copyAndRewrite(rawURL, altText, slug, sourceDir, mirrorDir string) (string,
 	dest := filepath.Join(destDir, base)
 	if err := copyFileIdempotent(src, dest); err != nil {
 		return "", err
+	}
+	// Generate resized variants alongside the source so the build flow
+	// can emit srcset/sizes. Unsupported formats (gif, svg, etc.) come
+	// back as (nil, nil) — image becomes a plain non-responsive <img>.
+	if _, err := images.GenerateVariants(dest); err != nil {
+		return "", fmt.Errorf("generate variants for %s: %w", dest, err)
 	}
 	return fmt.Sprintf("![%s](/images/%s/%s)", altText, slug, base), nil
 }

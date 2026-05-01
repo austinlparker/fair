@@ -65,6 +65,51 @@ func generateULID() (string, error) {
 	return id.String(), nil
 }
 
+// writeBackBskyPost inserts a `bsky_post: <at-uri>` line into the YAML
+// frontmatter of the file at path. Used after a successful --announce
+// to record the announce post's at-uri so future runs reuse it
+// (idempotency). If the file already has a bsky_post line, this is a
+// no-op (the announce flow shouldn't have run in that case anyway).
+func writeBackBskyPost(path, atURI string) error {
+	src, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("read %s: %w", path, err)
+	}
+	if strings.Contains(string(src), "bsky_post:") {
+		return nil
+	}
+	const fence = "---\n"
+	rest, ok := strings.CutPrefix(string(src), fence)
+	if !ok {
+		rest, ok = strings.CutPrefix(string(src), "---\r\n")
+		if !ok {
+			return fmt.Errorf("source does not start with --- frontmatter fence")
+		}
+	}
+	closingIdx := strings.Index(rest, "\n---")
+	if closingIdx < 0 {
+		return fmt.Errorf("missing closing frontmatter fence")
+	}
+	fmYAML := rest[:closingIdx]
+	tail := rest[closingIdx:]
+	// Append bsky_post as the last key (before the closing fence) so it
+	// sits with the other operator-supplied fields without disturbing
+	// the order of existing keys.
+	if !strings.HasSuffix(fmYAML, "\n") {
+		fmYAML += "\n"
+	}
+	updated := fence + fmYAML + "bsky_post: \"" + atURI + "\"\n" + tail + "\n"
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, []byte(updated), 0o644); err != nil {
+		return fmt.Errorf("write %s: %w", tmp, err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("rename %s -> %s: %w", tmp, path, err)
+	}
+	return nil
+}
+
 // writeBackID inserts an `id:` line into the YAML frontmatter of src.
 // The body is the previously-parsed body slice so we can reconstruct
 // the file deterministically.

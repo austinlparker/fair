@@ -7,10 +7,16 @@ import (
 	"io"
 	"mime"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 )
+
+// maxFaviconBytes caps the favicon download. A compromised or malicious
+// PDS could otherwise stream gigabytes for a "tiny" icon and exhaust
+// disk or memory on the build host. Real favicons are typically <100KB.
+const maxFaviconBytes = 5 << 20 // 5 MiB
 
 // fetchAndSaveFavicon pulls the publication's icon blob from the PDS
 // and writes it to <tmpOut>/favicon.<ext>. Returns the public path
@@ -25,8 +31,10 @@ func fetchAndSaveFavicon(ctx context.Context, hc *http.Client, cfg Config, icon 
 	if icon == nil || icon.Ref.Link == "" {
 		return "", errors.New("icon ref empty")
 	}
-	u := fmt.Sprintf("%s/xrpc/com.atproto.sync.getBlob?did=%s&cid=%s",
-		strings.TrimRight(cfg.PDSURL, "/"), cfg.DID, icon.Ref.Link)
+	q := url.Values{}
+	q.Set("did", cfg.DID)
+	q.Set("cid", icon.Ref.Link)
+	u := strings.TrimRight(cfg.PDSURL, "/") + "/xrpc/com.atproto.sync.getBlob?" + q.Encode()
 	req, err := http.NewRequestWithContext(ctx, "GET", u, nil)
 	if err != nil {
 		return "", err
@@ -50,7 +58,8 @@ func fetchAndSaveFavicon(ctx context.Context, hc *http.Client, cfg Config, icon 
 		return "", err
 	}
 	defer out.Close()
-	if _, err := io.Copy(out, resp.Body); err != nil {
+	// Cap the downloaded body so a hostile PDS can't fill the disk.
+	if _, err := io.Copy(out, io.LimitReader(resp.Body, maxFaviconBytes)); err != nil {
 		return "", err
 	}
 	return "/favicon" + ext, nil
