@@ -7,6 +7,10 @@
 # Local state
 /.fair/
 
+# Cloudflare deploy config (account-specific) + wrangler cache
+/wrangler.toml
+/.wrangler/
+
 # Sandbox runtime
 /sandbox/.env
 /sandbox/sandbox.pid
