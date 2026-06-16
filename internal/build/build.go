@@ -146,6 +146,7 @@ func Build(ctx context.Context, cfg Config) (*Result, error) {
 			URL:         strings.TrimRight(cfg.PublicationURL, "/"),
 			Name:        coalesce(cfg.PublicationName, cfg.PublicationURL),
 			Description: cfg.Description,
+			ATURI:       htmltemplate.URL("at://" + cfg.DID + "/site.standard.publication/self"),
 			SocialLinks: cfg.SocialLinks,
 		},
 		GeneratedAt: time.Now().UTC(),
@@ -488,8 +489,9 @@ type publicationView struct {
 	URL         string
 	Name        string
 	Description string
-	SocialLinks []string // raw URLs; emit as <link rel="me"> tags in the document head
-	FaviconPath string   // e.g. "/favicon.png"; empty when no icon blob
+	ATURI       htmltemplate.URL // at://<did>/site.standard.publication/self — emitted as rel="site.standard.publication" for discovery
+	SocialLinks []string         // raw URLs; emit as <link rel="me"> tags in the document head
+	FaviconPath string           // e.g. "/favicon.png"; empty when no icon blob
 }
 
 type postNeighbor struct {

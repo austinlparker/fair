@@ -11,6 +11,7 @@
 <title>{{.Publication.Name}}</title>
 {{if or .HomeMeta.Description .Publication.Description}}<meta name="description" content="{{if .HomeMeta.Description}}{{.HomeMeta.Description}}{{else}}{{.Publication.Description}}{{end}}">{{end}}
 <link rel="canonical" href="{{.Publication.URL}}/">
+<link rel="site.standard.publication" href="{{.Publication.ATURI}}">
 
 <meta property="og:title" content="{{.Publication.Name}}">
 <meta property="og:type" content="website">
