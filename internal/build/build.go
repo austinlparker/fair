@@ -221,6 +221,17 @@ func Build(ctx context.Context, cfg Config) (*Result, error) {
 		// Add native lazy-loading + async decoding to all <img>.
 		body = EnhanceImages(body)
 		pv.HTMLBody = htmltemplate.HTML(body)
+		// Fetch the cover blob (if any) into /covers/<slug>.<ext> for
+		// og:image and the post-header image. Non-fatal: log and render
+		// the post coverless on failure.
+		if pv.coverImage != nil {
+			slug := strings.TrimPrefix(pv.Path, "/")
+			if path, err := fetchAndSaveCover(ctx, httpClient, cfg, pv.coverImage, slug, tmpOut); err == nil {
+				pv.CoverPath = path
+			} else {
+				fmt.Fprintf(os.Stderr, "  warn: cover fetch failed for %s: %v\n", d.URI, err)
+			}
+		}
 		posts = append(posts, pv)
 	}
 
@@ -497,6 +508,8 @@ type postView struct {
 	Lastmod        time.Time // = UpdatedAt or PublishedAt; precomputed for sitemap.xml
 	Description    string
 	HTMLBody       htmltemplate.HTML
+	CoverPath      string             // "/covers/<slug>.<ext>" for og:image + header <img>; empty when no cover blob
+	coverImage     *blobRef           // unexported: cover blob ref awaiting getBlob in Build's loop; not rendered
 	Tags           []string
 	BskyPostURL    string // bsky.app web URL derived from bskyPostRef
 	BskyPostAtURI  string // at-uri of the bsky discussion thread; used by the inline-JS comments fetch
@@ -702,6 +715,7 @@ type rawDocumentValue struct {
 		Text    string `json:"text"`
 		Version string `json:"version,omitempty"`
 	} `json:"content"`
+	CoverImage  *blobRef `json:"coverImage,omitempty"`
 	BskyPostRef *struct {
 		URI string `json:"uri"`
 		CID string `json:"cid"`
@@ -776,6 +790,7 @@ func documentToPostView(d rawDocument, publicationURL string) (postView, error) 
 		Lastmod:        lastmod,
 		Description:    v.Description,
 		HTMLBody:       htmltemplate.HTML(html),
+		coverImage:     v.CoverImage,
 		Tags:           v.Tags,
 		BskyPostURL:    bskyPostURL,
 		BskyPostAtURI:  bskyPostAtURI,

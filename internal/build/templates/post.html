@@ -6,7 +6,7 @@
 <meta name="color-scheme" content="light dark">
 <meta name="theme-color" media="(prefers-color-scheme: light)" content="#ffffff">
 <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#1a1a1a">
-<style>body{max-width:720px;margin:0 auto;padding:1rem;font-family:system-ui,sans-serif;line-height:1.5}nav{text-align:center;font-size:0.875em}img{max-width:100%;height:auto}</style>
+<style>body{max-width:720px;margin:0 auto;padding:1rem;font-family:system-ui,sans-serif;line-height:1.5}nav{text-align:center;font-size:0.875em}img{max-width:100%;height:auto}.cover{display:block;width:100%;aspect-ratio:16/6;object-fit:cover;border-radius:8px;margin-bottom:1.25rem}</style>
 <script type="speculationrules">{"prerender":[{"where":{"href_matches":"/*"},"eagerness":"moderate"}]}</script>
 <title>{{.Title}} — {{.Publication.Name}}</title>
 {{if .Description}}<meta name="description" content="{{.Description}}">{{end}}
@@ -17,9 +17,11 @@
 <meta property="og:url" content="{{.AbsoluteURL}}">
 <meta property="og:site_name" content="{{.Publication.Name}}">
 {{if .Description}}<meta property="og:description" content="{{.Description}}">{{end}}
-<meta name="twitter:card" content="summary">
+{{if .CoverPath}}<meta property="og:image" content="{{.Publication.URL}}{{.CoverPath}}">{{end}}
+<meta name="twitter:card" content="{{if .CoverPath}}summary_large_image{{else}}summary{{end}}">
 <meta name="twitter:title" content="{{.Title}}">
 {{if .Description}}<meta name="twitter:description" content="{{.Description}}">{{end}}
+{{if .CoverPath}}<meta name="twitter:image" content="{{.Publication.URL}}{{.CoverPath}}">{{end}}
 
 <meta name="article:published_time" content="{{.PublishedAt.Format "2006-01-02T15:04:05Z07:00"}}">
 {{if not .UpdatedAt.IsZero}}<meta name="article:modified_time" content="{{.UpdatedAt.Format "2006-01-02T15:04:05Z07:00"}}">{{end}}
@@ -39,6 +41,7 @@
 <body>
 <article>
 <header>
+{{if .CoverPath}}<img class="cover" src="{{.CoverPath}}" alt="">{{end}}
 <h1>{{.Title}}</h1>
 <p><small><time datetime="{{.PublishedAt.Format "2006-01-02T15:04:05Z07:00"}}">{{.PublishedAt.Format "January 2, 2006"}}</time>{{if not .UpdatedAt.IsZero}} (updated {{.UpdatedAt.Format "January 2, 2006"}}){{end}}{{if .ReadingMinutes}} &middot; {{.ReadingMinutes}} min read{{end}}{{if .Tags}} &middot; {{range $i, $t := .Tags}}{{if $i}}, {{end}}<a href="{{$.Publication.URL}}/tags/{{$t}}/">{{$t}}</a>{{end}}{{end}}{{if .PdsLsURL}} &middot; <a href="{{.PdsLsURL}}" title="View source record on pdsls.dev"><code>at://</code></a>{{end}}</small></p>
 </header>
