@@ -94,6 +94,62 @@ date: "2025-04-17"
 	}
 }
 
+func TestEnsureRkey_GeneratesValidTIDWhenMissing(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "post.md")
+	if err := os.WriteFile(path, []byte(`---
+title: "Hello"
+date: "2025-04-17"
+---
+
+body
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	rkey, err := publish.EnsureRkey(path)
+	if err != nil {
+		t.Fatalf("EnsureRkey: %v", err)
+	}
+	// TID is exactly 13 chars (the lexicon's key:tid requirement).
+	if len(rkey) != 13 {
+		t.Errorf("rkey length: got %d (%q), want 13", len(rkey), rkey)
+	}
+
+	got, _ := os.ReadFile(path)
+	if !strings.Contains(string(got), "rkey: "+rkey) {
+		t.Errorf("frontmatter missing 'rkey: %s' after write-back:\n%s", rkey, string(got))
+	}
+}
+
+func TestEnsureRkey_PreservesExisting(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "post.md")
+	original := `---
+rkey: 3lbexisting00
+title: Hello
+date: "2025-04-17"
+---
+
+body
+`
+	if err := os.WriteFile(path, []byte(original), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	rkey, err := publish.EnsureRkey(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rkey != "3lbexisting00" {
+		t.Errorf("rkey changed: got %q, want existing", rkey)
+	}
+	got, _ := os.ReadFile(path)
+	if string(got) != original {
+		t.Errorf("file rewritten unnecessarily:\nwant:\n%s\ngot:\n%s", original, string(got))
+	}
+}
+
 func TestEnsureID_RejectsMissingTitle(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "post.md")

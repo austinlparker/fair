@@ -16,6 +16,7 @@ import (
 // happens later in the publish flow, not here.
 type Frontmatter struct {
 	ID          string   `yaml:"id,omitempty"`
+	Rkey        string   `yaml:"rkey,omitempty"` // TID record key on the PDS; the site.standard.document lexicon requires key:tid
 	Title       string   `yaml:"title"`
 	Date        string   `yaml:"date"`
 	Description string   `yaml:"description,omitempty"`

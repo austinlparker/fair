@@ -97,26 +97,6 @@ func TestState_FilePerms(t *testing.T) {
 	}
 }
 
-func TestState_LookupByID(t *testing.T) {
-	s := &publish.State{
-		Entries: map[string]publish.StateEntry{
-			"slug-a": {ID: "ID-A"},
-			"slug-b": {ID: "ID-B"},
-			"slug-c": {ID: "ID-A"}, // duplicate id (shouldn't happen but test the behavior)
-		},
-	}
-
-	rkey, found := s.RkeyByID("ID-B")
-	if !found || rkey != "slug-b" {
-		t.Errorf("got %q, %v; want slug-b, true", rkey, found)
-	}
-
-	_, found = s.RkeyByID("ID-DOES-NOT-EXIST")
-	if found {
-		t.Error("expected not-found for nonexistent ID")
-	}
-}
-
 func TestLoadState_CorruptJSONReturnsError(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.json")
 	os.WriteFile(path, []byte("{not json"), 0o600)

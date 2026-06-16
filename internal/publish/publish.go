@@ -96,6 +96,14 @@ func Publish(ctx context.Context, client *atproto.Client, sourcePath string, cfg
 		return Result{}, fmt.Errorf("ensure id: %w", err)
 	}
 
+	// 1b. Record key (writes a TID rkey back to source if missing). The
+	//     lexicon requires key:tid; persisting it in frontmatter keeps
+	//     re-publishes idempotent across machines.
+	rkey, err := EnsureRkey(sourcePath)
+	if err != nil {
+		return Result{}, fmt.Errorf("ensure rkey: %w", err)
+	}
+
 	// 2. Reread the (possibly mutated) source.
 	src, err := os.ReadFile(sourcePath)
 	if err != nil {
@@ -118,13 +126,13 @@ func Publish(ctx context.Context, client *atproto.Client, sourcePath string, cfg
 		return Result{}, err
 	}
 
-	// 4. State + rename detection.
+	// 4. State. Renames are no longer special-cased: the TID rkey lives
+	//    in frontmatter, so renaming a post's directory just changes the
+	//    slug-derived `path` field on the same record — a normal update,
+	//    not a delete-and-recreate.
 	state, err := LoadState(cfg.StateFile)
 	if err != nil {
 		return Result{}, err
-	}
-	if existing, ok := state.RkeyByID(id); ok && existing != slug {
-		return Result{}, fmt.Errorf("rename detected: id %s was published as rkey %q, now derives %q. Run `fair rename %s %s` to atomically delete-and-recreate", id, existing, slug, existing, slug)
 	}
 
 	// 5. Body normalization + image rewriting.
@@ -170,7 +178,7 @@ func Publish(ctx context.Context, client *atproto.Client, sourcePath string, cfg
 		Frontmatter:     fm,
 		CoverSourceHash: coverHash,
 	})
-	prevEntry, hadEntry := state.Entries[slug]
+	prevEntry, hadEntry := state.Entries[rkey]
 	// --announce on a hash-unchanged post that's never been announced
 	// must NOT short-circuit: the announce flow needs to run, the
 	// document needs to be re-put with the new bskyPostRef, and the
@@ -179,7 +187,7 @@ func Publish(ctx context.Context, client *atproto.Client, sourcePath string, cfg
 	if hadEntry && prevEntry.LastHash == hash && !opts.Force && !needsAnnounce {
 		log("skip %s (hash unchanged)", slug)
 		return Result{
-			Rkey:    slug,
+			Rkey:    rkey,
 			DID:     client.Session().DID,
 			Skipped: true,
 			Reason:  "hash unchanged",
@@ -188,7 +196,7 @@ func Publish(ctx context.Context, client *atproto.Client, sourcePath string, cfg
 
 	if opts.DryRun {
 		log("would publish %s (force=%v, cover=%v, images-mirrored)", slug, opts.Force, fm.Cover != "")
-		return Result{Rkey: slug, DID: client.Session().DID}, nil
+		return Result{Rkey: rkey, DID: client.Session().DID}, nil
 	}
 
 	// 9. Upload cover blob if size/contents changed.
@@ -290,15 +298,15 @@ func Publish(ctx context.Context, client *atproto.Client, sourcePath string, cfg
 	}
 
 	// 11. PutRecord.
-	log("putRecord %s/%s", "site.standard.document", slug)
-	ref, err := client.PutRecord(ctx, "site.standard.document", slug, record)
+	log("putRecord %s/%s", "site.standard.document", rkey)
+	ref, err := client.PutRecord(ctx, "site.standard.document", rkey, record)
 	if err != nil {
 		return Result{}, err
 	}
 
 	// 12. Persist state. (Image mirror copies happened in step 5;
 	//     orphan files on a put-success/state-save fail are harmless.)
-	state.Entries[slug] = StateEntry{
+	state.Entries[rkey] = StateEntry{
 		ID:              id,
 		LastHash:        hash,
 		LastCoverHash:   coverHash,
@@ -309,7 +317,7 @@ func Publish(ctx context.Context, client *atproto.Client, sourcePath string, cfg
 	}
 
 	return Result{
-		Rkey:         slug,
+		Rkey:         rkey,
 		DID:          client.Session().DID,
 		URI:          ref.URI,
 		CID:          ref.CID,

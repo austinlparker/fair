@@ -21,8 +21,9 @@ type StateEntry struct {
 	LastPublishedAt time.Time `json:"last_published_at"`
 }
 
-// State is the on-disk publish-flow cache. Indexed by rkey (slug);
-// callers needing reverse lookup by ID use RkeyByID.
+// State is the on-disk publish-flow cache, indexed by the TID rkey. The
+// per-entry ID (the post's ULID) is the cross-machine identity `ls` uses
+// to reconcile PDS records against local markdown.
 type State struct {
 	Entries map[string]StateEntry `json:"entries"`
 }
@@ -80,16 +81,3 @@ func (s *State) Save(path string) error {
 	return os.Rename(tmpName, path)
 }
 
-// RkeyByID returns the rkey whose StateEntry has the given ID, or false
-// when not found. Used by the publish flow's local-first rename
-// detection: if the source markdown has id X and the on-disk state maps
-// rkey Y to id X, but the slug derived from the file path is Z, that's
-// a rename (Y -> Z).
-func (s *State) RkeyByID(id string) (string, bool) {
-	for rkey, entry := range s.Entries {
-		if entry.ID == id {
-			return rkey, true
-		}
-	}
-	return "", false
-}

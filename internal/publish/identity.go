@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"aparker.io/fair/internal/markdown"
+	"github.com/bluesky-social/indigo/atproto/syntax"
 	"github.com/oklog/ulid/v2"
 )
 
@@ -52,6 +53,45 @@ func EnsureID(path string) (string, error) {
 		return "", fmt.Errorf("rename %s -> %s: %w", tmp, path, err)
 	}
 	return id, nil
+}
+
+// EnsureRkey returns the post's TID record key, writing it back into the
+// source frontmatter if missing. The site.standard.document lexicon
+// declares key:tid, so the rkey must be a TID — we generate one per post
+// and persist it in frontmatter so re-publishes (including from another
+// machine with no local state) target the same record instead of
+// creating a duplicate.
+//
+// This is distinct from the ULID id (cross-machine identity for `ls`
+// reconciliation) and from the slug (which drives the URL via the record
+// `path` field). The rkey is the PDS record key only.
+func EnsureRkey(path string) (string, error) {
+	src, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("read %s: %w", path, err)
+	}
+	fm, _, err := markdown.Parse(string(src))
+	if err != nil {
+		return "", fmt.Errorf("parse %s: %w", path, err)
+	}
+	if fm.Rkey != "" {
+		return fm.Rkey, nil
+	}
+
+	rkey := syntax.NewTIDNow(0).String()
+	updated, err := writeBackRkey(string(src), rkey)
+	if err != nil {
+		return "", err
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, []byte(updated), 0o644); err != nil {
+		return "", fmt.Errorf("write %s: %w", tmp, err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return "", fmt.Errorf("rename %s -> %s: %w", tmp, path, err)
+	}
+	return rkey, nil
 }
 
 // generateULID produces a Crockford-base32 ULID using the current
@@ -108,6 +148,31 @@ func writeBackBskyPost(path, atURI string) error {
 		return fmt.Errorf("rename %s -> %s: %w", tmp, path, err)
 	}
 	return nil
+}
+
+// writeBackRkey inserts an `rkey:` line as the first frontmatter key of
+// src, preserving the rest of the file byte-for-byte (same approach as
+// writeBackID — no yaml re-marshal, so comments and quote styles survive).
+func writeBackRkey(src, rkey string) (string, error) {
+	const fence = "---\n"
+	rest, ok := strings.CutPrefix(src, fence)
+	if !ok {
+		rest, ok = strings.CutPrefix(src, "---\r\n")
+		if !ok {
+			return "", fmt.Errorf("source does not start with --- frontmatter fence")
+		}
+	}
+	closingIdx := strings.Index(rest, "\n---")
+	if closingIdx < 0 {
+		return "", fmt.Errorf("missing closing frontmatter fence")
+	}
+	fmYAML := rest[:closingIdx]
+	tail := rest[closingIdx:]
+	newYAML := "rkey: " + rkey + "\n" + fmYAML
+	if !strings.HasSuffix(newYAML, "\n") {
+		newYAML += "\n"
+	}
+	return fence + newYAML + tail, nil
 }
 
 // writeBackID inserts an `id:` line into the YAML frontmatter of src.
