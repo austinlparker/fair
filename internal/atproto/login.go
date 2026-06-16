@@ -36,8 +36,10 @@ const LoopbackRedirectPath = "/callback"
 //   - repo:site.standard.document — read/write/delete posts
 //   - repo:app.bsky.feed.post — create the optional announce post (--announce)
 //     for the bsky_post / bskyPostRef discussion thread on each document
-//   - blob — upload cover images
-const BlogScopes = "atproto repo:site.standard.publication repo:site.standard.document repo:app.bsky.feed.post blob"
+//   - blob:image/{png,jpeg,webp} — upload cover images. Blob scopes
+//     require a mime parameter; a bare "blob" is invalid granular syntax
+//     and must stay in lockstep with the published client-metadata doc.
+const BlogScopes = "atproto repo:site.standard.publication repo:site.standard.document repo:app.bsky.feed.post blob:image/png blob:image/jpeg blob:image/webp"
 
 // LoopbackClientID builds an ATProto-compliant loopback client_id of the
 // form http://localhost?scope=...&redirect_uri=http%3A%2F%2F127.0.0.1%2F<path>.
