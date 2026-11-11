@@ -8,8 +8,6 @@ import (
 	"net/url"
 	"strings"
 	"time"
-
-	"aparker.io/fair/internal/atproto"
 )
 
 // publicBskyAppView is the unauthenticated AppView the publish flow
@@ -24,7 +22,9 @@ const publicBskyAppView = "https://public.api.bsky.app"
 var bskyAppViewClient = &http.Client{Timeout: 10 * time.Second}
 
 // resolveBskyPostCID parses an at-uri of the form
-//   at://<did-or-handle>/app.bsky.feed.post/<rkey>
+//
+//	at://<did-or-handle>/app.bsky.feed.post/<rkey>
+//
 // and fetches the matching record's CID. When the at-uri references
 // the publishing user's own repo, we use the authenticated client's
 // GetRecord (which already trusts the user's PDS — important for
@@ -35,7 +35,7 @@ var bskyAppViewClient = &http.Client{Timeout: 10 * time.Second}
 // site.standard.document.bskyPostRef is typed as a strongRef per the
 // canonical lexicon at
 // https://tangled.sh/standard.site/lexicons/blob/main/src/lexicons/site.standard.document.ts
-func resolveBskyPostCID(ctx context.Context, atURI string, client *atproto.Client) (cid string, err error) {
+func resolveBskyPostCID(ctx context.Context, atURI string, client PDS) (cid string, err error) {
 	repo, collection, rkey, err := parseATURI(atURI)
 	if err != nil {
 		return "", fmt.Errorf("bsky_post %q: %w", atURI, err)
@@ -46,7 +46,7 @@ func resolveBskyPostCID(ctx context.Context, atURI string, client *atproto.Clien
 
 	// Own-repo lookup uses the authenticated client (which trusts the
 	// session's PDS — covers sandbox/mkcert).
-	if client != nil && repo == client.Session().DID {
+	if client != nil && repo == client.DID() {
 		out, err := client.GetRecord(ctx, collection, rkey)
 		if err != nil {
 			return "", fmt.Errorf("getRecord on own PDS for %s: %w", atURI, err)
@@ -65,7 +65,7 @@ func resolveBskyPostCID(ctx context.Context, atURI string, client *atproto.Clien
 	q.Set("collection", collection)
 	q.Set("rkey", rkey)
 	endpoint := publicBskyAppView + "/xrpc/com.atproto.repo.getRecord?" + q.Encode()
-	body, err := tryGetRecord(ctx, endpoint)
+	body, err := fetchRecordRef(ctx, endpoint)
 	if err != nil {
 		return "", fmt.Errorf("public AppView for %s: %w", atURI, err)
 	}
@@ -75,10 +75,9 @@ func resolveBskyPostCID(ctx context.Context, atURI string, client *atproto.Clien
 	return body.CID, nil
 }
 
-// tryGetRecord performs one getRecord lookup and decodes the URI+CID
-// envelope. Caller is responsible for trying alternative endpoints on
-// failure.
-func tryGetRecord(ctx context.Context, endpoint string) (struct {
+// fetchRecordRef performs one unauthenticated getRecord lookup and
+// decodes the URI+CID envelope.
+func fetchRecordRef(ctx context.Context, endpoint string) (struct {
 	URI string `json:"uri"`
 	CID string `json:"cid"`
 }, error) {
@@ -105,7 +104,9 @@ func tryGetRecord(ctx context.Context, endpoint string) (struct {
 }
 
 // parseATURI splits an at-uri into its three components. Expected shape:
-//   at://<repo>/<collection>/<rkey>
+//
+//	at://<repo>/<collection>/<rkey>
+//
 // where repo is a DID or handle, collection is an NSID, rkey is an
 // arbitrary record key. Returns (repo, collection, rkey, nil) on
 // success.

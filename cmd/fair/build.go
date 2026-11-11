@@ -6,7 +6,6 @@ import (
 	"os"
 	"os/signal"
 
-	"aparker.io/fair/internal/atproto"
 	"aparker.io/fair/internal/build"
 	"github.com/spf13/cobra"
 )
@@ -24,8 +23,7 @@ func newBuildCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			caBundle, _ := cmd.Flags().GetString("ca-bundle")
-			rootCAs, err := atproto.LoadExtraRoots(caBundle)
+			rootCAs, err := loadRootCAs(cmd)
 			if err != nil {
 				return err
 			}
@@ -58,6 +56,5 @@ func newBuildCmd() *cobra.Command {
 			return nil
 		},
 	}
-	cmd.Flags().String("ca-bundle", "", "PEM file containing extra trusted CAs (sandbox: mkcert root)")
 	return cmd
 }

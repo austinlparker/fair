@@ -53,8 +53,14 @@ func fetchBlobToFile(ctx context.Context, hc *http.Client, pdsURL, did string, r
 		return err
 	}
 	defer out.Close()
-	if _, err := io.Copy(out, io.LimitReader(resp.Body, maxBytes)); err != nil {
+	n, err := io.Copy(out, io.LimitReader(resp.Body, maxBytes+1))
+	if err != nil {
 		return err
+	}
+	if n > maxBytes {
+		// Don't ship a truncated (corrupt) image.
+		_ = os.Remove(dest)
+		return fmt.Errorf("blob exceeds %d byte cap", maxBytes)
 	}
 	return nil
 }

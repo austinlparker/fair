@@ -76,7 +76,7 @@ func EnrichResponsiveImages(html, mirrorDir, publicationURL string) string {
 
 		// Strip any pre-existing srcset/sizes/width/height to avoid
 		// duplicates if this pass runs twice.
-		cleaned := stripAttrs(attrs, "srcset", "sizes", "width", "height")
+		cleaned := responsiveAttrRe.ReplaceAllString(attrs, "")
 		return fmt.Sprintf(
 			`<img%s srcset="%s" sizes="100vw" width="%d" height="%d">`,
 			cleaned, srcset.String(), srcW, srcH,
@@ -84,15 +84,8 @@ func EnrichResponsiveImages(html, mirrorDir, publicationURL string) string {
 	})
 }
 
-// stripAttrs returns attrs with the listed attribute=value pairs
-// removed. Preserves leading whitespace and quoting style.
-func stripAttrs(attrs string, names ...string) string {
-	for _, name := range names {
-		re := regexp.MustCompile(`\s+` + regexp.QuoteMeta(name) + `="[^"]*"`)
-		attrs = re.ReplaceAllString(attrs, "")
-	}
-	return attrs
-}
+// responsiveAttrRe matches the attributes EnrichResponsiveImages owns.
+var responsiveAttrRe = regexp.MustCompile(`\s+(?:srcset|sizes|width|height)="[^"]*"`)
 
 // EnhanceImages adds loading="lazy" decoding="async" to every <img> tag
 // in html that doesn't already have those attributes. Free perf wins:

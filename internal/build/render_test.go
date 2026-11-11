@@ -123,3 +123,16 @@ func TestRenderMarkdown_PerformsZeroNetworkIO(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestRenderMarkdown_LeavesProtocolRelativeURLAlone(t *testing.T) {
+	got, err := build.RenderMarkdown(`<a href="//cdn.example.org/x.js">x</a> and [home](/)`+"\n", "https://example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(got, `href="//cdn.example.org/x.js"`) {
+		t.Errorf("protocol-relative URL was rewritten: %s", got)
+	}
+	if !strings.Contains(got, `href="https://example.com/"`) {
+		t.Errorf("site-root link not resolved: %s", got)
+	}
+}

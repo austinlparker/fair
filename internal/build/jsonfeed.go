@@ -21,15 +21,15 @@ type jsonFeed struct {
 }
 
 type jsonFeedItem struct {
-	ID            string    `json:"id"`
-	URL           string    `json:"url"`
-	Title         string    `json:"title"`
-	ContentHTML   string    `json:"content_html,omitempty"`
-	Summary       string    `json:"summary,omitempty"`
-	DatePublished time.Time `json:"date_published"`
+	ID            string     `json:"id"`
+	URL           string     `json:"url"`
+	Title         string     `json:"title"`
+	ContentHTML   string     `json:"content_html,omitempty"`
+	Summary       string     `json:"summary,omitempty"`
+	DatePublished time.Time  `json:"date_published"`
 	DateModified  *time.Time `json:"date_modified,omitempty"`
-	Tags          []string  `json:"tags,omitempty"`
-	ExternalURL   string    `json:"external_url,omitempty"` // bsky discussion link
+	Tags          []string   `json:"tags,omitempty"`
+	ExternalURL   string     `json:"external_url,omitempty"` // bsky discussion link
 }
 
 // writeJSONFeed emits feed.json into tmpOut.
@@ -67,17 +67,38 @@ func writeJSONFeed(tmpOut string, site siteContext) error {
 	return os.WriteFile(filepath.Join(tmpOut, "feed.json"), data, 0o644)
 }
 
+// writeWellKnownPublication emits /.well-known/site.standard.publication.
+// Marshaled rather than templated so a quote in the publication name
+// can't produce invalid JSON.
+func writeWellKnownPublication(tmpOut string, site siteContext) error {
+	doc := struct {
+		Type        string `json:"$type"`
+		URL         string `json:"url"`
+		Name        string `json:"name"`
+		Description string `json:"description,omitempty"`
+	}{"site.standard.publication", site.Publication.URL, site.Publication.Name, site.Publication.Description}
+	data, err := json.MarshalIndent(doc, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal well-known publication: %w", err)
+	}
+	dir := filepath.Join(tmpOut, ".well-known")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(dir, "site.standard.publication"), append(data, '\n'), 0o644)
+}
+
 // indexJSONItem is the trimmed-down per-post entry rendered into
 // index.json (no body, just metadata) for programmatic consumption.
 type indexJSONItem struct {
-	Title       string    `json:"title"`
-	URL         string    `json:"url"`
-	Path        string    `json:"path"`
-	ATURI       string    `json:"at_uri"`
-	PublishedAt time.Time `json:"published_at"`
+	Title       string     `json:"title"`
+	URL         string     `json:"url"`
+	Path        string     `json:"path"`
+	ATURI       string     `json:"at_uri"`
+	PublishedAt time.Time  `json:"published_at"`
 	UpdatedAt   *time.Time `json:"updated_at,omitempty"`
-	Description string    `json:"description,omitempty"`
-	Tags        []string  `json:"tags,omitempty"`
+	Description string     `json:"description,omitempty"`
+	Tags        []string   `json:"tags,omitempty"`
 }
 
 // writeIndexJSON emits a JSON listing of all posts (metadata only)

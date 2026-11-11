@@ -5,9 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
-	"path/filepath"
 
-	"aparker.io/fair/internal/atproto"
 	"aparker.io/fair/internal/ops"
 	"github.com/spf13/cobra"
 )
@@ -24,14 +22,10 @@ func newDoctorCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			caBundle, _ := cmd.Flags().GetString("ca-bundle")
-			rootCAs, err := atproto.LoadExtraRoots(caBundle)
+			rootCAs, err := loadRootCAs(cmd)
 			if err != nil {
 				return err
 			}
-
-			configDir, _ := cmd.Flags().GetString("config-dir")
-			store := atproto.NewFileStore(filepath.Join(configDir, "sessions"))
 
 			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 			defer stop()
@@ -39,7 +33,7 @@ func newDoctorCmd() *cobra.Command {
 			checks := ops.Doctor(ctx, ops.DoctorOptions{
 				Profile:   profile,
 				Cfg:       cfg,
-				Store:     store,
+				Store:     sessionStore(cmd),
 				RootCAs:   rootCAs,
 				StateFile: cfg.StateFile,
 			})
@@ -60,6 +54,5 @@ func newDoctorCmd() *cobra.Command {
 			return nil
 		},
 	}
-	cmd.Flags().String("ca-bundle", "", "PEM file containing extra trusted CAs (sandbox: mkcert root)")
 	return cmd
 }

@@ -3,20 +3,25 @@ package publish
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"path/filepath"
 	"slices"
 	"strings"
 )
 
-// ReservedSlugs are paths/rkeys that would collide with site routing or
-// PDS conventions. ValidateSlug rejects them.
-var ReservedSlugs = []string{"self", "index", "feed", "sitemap", ".well-known"}
+// ReservedSlugs are names that would collide with paths the build flow
+// emits at the site root (a post at /tags would be overwritten by the
+// tag index, and so on). ValidateSlug rejects them.
+var ReservedSlugs = []string{
+	"self", "index", "feed", "sitemap", ".well-known",
+	"tags", "archive", "images", "covers",
+}
 
 // ValidateSlug returns nil if s matches the publish-flow slug grammar:
 // non-empty, lowercase ASCII letters/digits/hyphens, no double-hyphens,
-// no leading/trailing hyphen, not a reserved name. The slug doubles as
-// the rkey on the PDS so we keep grammar tighter than ATProto's general
-// rkey rules — clean URL paths.
+// no leading/trailing hyphen, not a reserved name. The slug becomes the
+// record's `path` field and the post's directory in the built site;
+// internal/build/safety.go enforces the same grammar on the read side.
 func ValidateSlug(s string) error {
 	if s == "" {
 		return errors.New("slug is empty")
@@ -67,4 +72,26 @@ func SlugFromPath(path string) (string, error) {
 		}
 	}
 	return base, nil
+}
+
+// FindPosts returns every post source (a file named index.md) under
+// root, sorted. Hidden directories (.git, .fair, ...) are skipped.
+func FindPosts(root string) ([]string, error) {
+	var posts []string
+	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			if p != root && strings.HasPrefix(d.Name(), ".") {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if d.Name() == "index.md" {
+			posts = append(posts, p)
+		}
+		return nil
+	})
+	return posts, err // WalkDir visits in lexical order
 }

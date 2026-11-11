@@ -6,30 +6,41 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/bluesky-social/indigo/xrpc"
 	oauth "github.com/haileyok/atproto-oauth-golang"
+	"github.com/ipfs/go-cid"
 	"github.com/lestrrat-go/jwx/v2/jwk"
+	"github.com/multiformats/go-multihash"
 )
 
 // Client is the authenticated XRPC wrapper used by the publish flow.
-// It binds a Session to a *haileyok* XrpcClient, handles DPoP nonce
-// rotation transparently (persisting via the TokenStore), and exposes
-// repo CRUD methods modeled on com.atproto.repo.*.
+// It exposes repo CRUD methods modeled on com.atproto.repo.* over one
+// of two auth modes:
 //
-// Construction: NewClient(profile, store, rootCAs). The session must
-// already exist on disk (i.e., `fair auth login` has run for profile).
+//   - OAuth (NewClient): binds a persisted Session to a *haileyok*
+//     XrpcClient and handles DPoP nonce rotation transparently. The
+//     session must already exist on disk (`fair auth login` has run).
+//   - App password (NewAppPasswordClient): a fresh legacy bearer
+//     session per process, nothing persisted. For headless runs (CI)
+//     where the OAuth browser hop and rotating refresh tokens don't fit.
 //
 // Concurrency: Client is not goroutine-safe. The publish flow is single-
 // threaded so this is acceptable; if that changes, add a Mutex around
 // session mutations and persistence.
 type Client struct {
+	did string
+	// do issues one authenticated XRPC request; its shape matches both
+	// underlying libraries' Do methods minus their auth arguments.
+	do func(ctx context.Context, kind, encoding, method string, params map[string]any, body, out any) error
+
+	// OAuth mode only; zero in app-password mode.
 	session Session
 	store   TokenStore
 	profile string
 	dpopKey jwk.Key
-	xrpc    *oauth.XrpcClient
 }
 
 // NewClient loads the session for profile and prepares the XRPC layer.
@@ -46,39 +57,61 @@ func NewClient(profile string, store TokenStore, rootCAs *x509.CertPool) (*Clien
 	}
 
 	c := &Client{
+		did:     session.DID,
 		session: session,
 		store:   store,
 		profile: profile,
 		dpopKey: dpopKey,
-		xrpc: &oauth.XrpcClient{
-			Client: newHTTPClient(rootCAs),
-		},
 	}
+	x := &oauth.XrpcClient{Client: NewHTTPClient(rootCAs)}
 	// Persist the new nonce on every PDS rotation so the next CLI
 	// invocation starts with the correct value.
-	c.xrpc.OnDpopPdsNonceChanged = func(_, nonce string) {
+	x.OnDpopPdsNonceChanged = func(_, nonce string) {
 		c.session.DPoPPDSNonce = nonce
 		_ = c.store.Save(profile, c.session)
+	}
+	c.do = func(ctx context.Context, kind, encoding, method string, params map[string]any, body, out any) error {
+		// Built per request: refresh and nonce rotation mutate c.session.
+		args := &oauth.XrpcAuthedRequestArgs{
+			Did:            c.session.DID,
+			PdsUrl:         c.session.PDSURL,
+			Issuer:         c.session.AuthServerIssuer,
+			AccessToken:    c.session.AccessToken,
+			DpopPdsNonce:   c.session.DPoPPDSNonce,
+			DpopPrivateJwk: c.dpopKey,
+		}
+		return x.Do(ctx, args, kind, encoding, method, params, body, out)
 	}
 	return c, nil
 }
 
-// Session returns a copy of the current session state.
-func (c *Client) Session() Session {
-	return c.session
+// NewAppPasswordClient signs in with com.atproto.server.createSession
+// and returns a Client using the resulting bearer token. identifier is
+// a handle or DID. Nothing is persisted and the token is never
+// refreshed: it outlives any single CLI run by a wide margin.
+func NewAppPasswordClient(ctx context.Context, pdsURL, identifier, password string, rootCAs *x509.CertPool) (*Client, error) {
+	x := &xrpc.Client{
+		Client: NewHTTPClient(rootCAs),
+		Host:   strings.TrimRight(pdsURL, "/"),
+	}
+	var out struct {
+		AccessJwt string `json:"accessJwt"`
+		DID       string `json:"did"`
+	}
+	in := map[string]any{"identifier": identifier, "password": password}
+	if err := x.Do(ctx, xrpc.Procedure, "application/json", "com.atproto.server.createSession", nil, in, &out); err != nil {
+		return nil, fmt.Errorf("createSession: %w", err)
+	}
+	if out.AccessJwt == "" || out.DID == "" {
+		return nil, fmt.Errorf("createSession: response missing accessJwt or did")
+	}
+	x.Auth = &xrpc.AuthInfo{AccessJwt: out.AccessJwt, Did: out.DID}
+	return &Client{did: out.DID, do: x.Do}, nil
 }
 
-// authedArgs assembles the per-request auth bundle the haileyok library
-// expects.
-func (c *Client) authedArgs() *oauth.XrpcAuthedRequestArgs {
-	return &oauth.XrpcAuthedRequestArgs{
-		Did:            c.session.DID,
-		PdsUrl:         c.session.PDSURL,
-		Issuer:         c.session.AuthServerIssuer,
-		AccessToken:    c.session.AccessToken,
-		DpopPdsNonce:   c.session.DPoPPDSNonce,
-		DpopPrivateJwk: c.dpopKey,
-	}
+// DID returns the repo the client is authenticated as.
+func (c *Client) DID() string {
+	return c.did
 }
 
 // --- repo CRUD --------------------------------------------------------------
@@ -102,13 +135,13 @@ type RecordRef struct {
 // directly (use map[string]any or a struct with json tags).
 func (c *Client) PutRecord(ctx context.Context, collection, rkey string, record any) (*RecordRef, error) {
 	in := PutRecordInput{
-		Repo:       c.session.DID,
+		Repo:       c.did,
 		Collection: collection,
 		Rkey:       rkey,
 		Record:     record,
 	}
 	var out RecordRef
-	err := c.xrpc.Do(ctx, c.authedArgs(),
+	err := c.do(ctx,
 		xrpc.Procedure, "application/json",
 		"com.atproto.repo.putRecord", nil, in, &out,
 	)
@@ -134,12 +167,12 @@ type CreateRecordInput struct {
 // Returns the assigned URI+CID.
 func (c *Client) CreateRecord(ctx context.Context, collection string, record any) (*RecordRef, error) {
 	in := CreateRecordInput{
-		Repo:       c.session.DID,
+		Repo:       c.did,
 		Collection: collection,
 		Record:     record,
 	}
 	var out RecordRef
-	err := c.xrpc.Do(ctx, c.authedArgs(),
+	err := c.do(ctx,
 		xrpc.Procedure, "application/json",
 		"com.atproto.repo.createRecord", nil, in, &out,
 	)
@@ -159,12 +192,12 @@ type GetRecordOutput struct {
 // GetRecord fetches a single record by collection+rkey.
 func (c *Client) GetRecord(ctx context.Context, collection, rkey string) (*GetRecordOutput, error) {
 	params := map[string]any{
-		"repo":       c.session.DID,
+		"repo":       c.did,
 		"collection": collection,
 		"rkey":       rkey,
 	}
 	var out GetRecordOutput
-	err := c.xrpc.Do(ctx, c.authedArgs(),
+	err := c.do(ctx,
 		xrpc.Query, "",
 		"com.atproto.repo.getRecord", params, nil, &out,
 	)
@@ -193,7 +226,7 @@ type ListRecordsItem struct {
 // limit is clamped to [1, 100] by the PDS; passing 0 lets the server pick.
 func (c *Client) ListRecords(ctx context.Context, collection, cursor string, limit int) (*ListRecordsOutput, error) {
 	params := map[string]any{
-		"repo":       c.session.DID,
+		"repo":       c.did,
 		"collection": collection,
 	}
 	if cursor != "" {
@@ -203,7 +236,7 @@ func (c *Client) ListRecords(ctx context.Context, collection, cursor string, lim
 		params["limit"] = limit
 	}
 	var out ListRecordsOutput
-	err := c.xrpc.Do(ctx, c.authedArgs(),
+	err := c.do(ctx,
 		xrpc.Query, "",
 		"com.atproto.repo.listRecords", params, nil, &out,
 	)
@@ -217,11 +250,11 @@ func (c *Client) ListRecords(ctx context.Context, collection, cursor string, lim
 // well-behaved PDS — deleting a missing record returns success.
 func (c *Client) DeleteRecord(ctx context.Context, collection, rkey string) error {
 	in := map[string]any{
-		"repo":       c.session.DID,
+		"repo":       c.did,
 		"collection": collection,
 		"rkey":       rkey,
 	}
-	err := c.xrpc.Do(ctx, c.authedArgs(),
+	err := c.do(ctx,
 		xrpc.Procedure, "application/json",
 		"com.atproto.repo.deleteRecord", nil, in, nil,
 	)
@@ -248,6 +281,17 @@ type BlobCID struct {
 	Link string `json:"$link"`
 }
 
+// BlobCIDFor returns the CID a PDS assigns to a blob with these bytes
+// (CIDv1, raw codec, sha2-256), so local bytes can be compared against
+// a published BlobRef without uploading them.
+func BlobCIDFor(data []byte) string {
+	sum, err := multihash.Sum(data, multihash.SHA2_256, -1)
+	if err != nil {
+		panic(err) // SHA2_256 at default length cannot fail
+	}
+	return cid.NewCidV1(cid.Raw, sum).String()
+}
+
 // uploadBlobOutput is the response shape from com.atproto.repo.uploadBlob.
 type uploadBlobOutput struct {
 	Blob BlobRef `json:"blob"`
@@ -261,7 +305,7 @@ func (c *Client) UploadBlob(ctx context.Context, mimeType string, data []byte) (
 	}
 	body := bytes.NewReader(data)
 	var out uploadBlobOutput
-	err := c.xrpc.Do(ctx, c.authedArgs(),
+	err := c.do(ctx,
 		xrpc.Procedure, mimeType,
 		"com.atproto.repo.uploadBlob", nil, body, &out,
 	)
@@ -282,11 +326,12 @@ func (c *Client) UploadBlob(ctx context.Context, mimeType string, data []byte) (
 // or domain-derived, plus the persistent ECDSA JWK). RefreshIfNeeded
 // is a no-op if the session isn't expired.
 func (c *Client) RefreshIfNeeded(ctx context.Context, clientID string, clientKey jwk.Key, rootCAs *x509.CertPool) error {
-	if !c.session.IsExpired(time.Now()) {
+	// App-password clients hold a fresh token and have nothing to refresh.
+	if c.store == nil || !c.session.IsExpired(time.Now()) {
 		return nil
 	}
 	oauthClient, err := oauth.NewClient(oauth.ClientArgs{
-		Http:      newHTTPClient(rootCAs),
+		Http:      NewHTTPClient(rootCAs),
 		ClientJwk: clientKey,
 		ClientId:  clientID,
 		// RedirectUri is required by NewClient but not used during refresh.

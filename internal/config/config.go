@@ -57,10 +57,11 @@ func Load(path string) (*Config, error) {
 	return &c, nil
 }
 
-// validate returns an error naming the first missing required field.
-// Required fields are those without sensible defaults: connection details
-// (PDSURL, DID), site identity (Domain, PublicationName), and the source
-// directory (BlogPosts). Other fields fall back to defaults via Defaults().
+// validate returns an error naming the first missing required field:
+// connection details (PDSURL, DID), site identity (Domain,
+// PublicationName), and the source directory (BlogPosts). The remaining
+// paths (state_file, images_mirror, dist_dir) have no defaults; the
+// subcommands that need them check at point of use.
 func (c *Config) validate() error {
 	required := []struct {
 		name  string

@@ -1,8 +1,8 @@
 package publish
 
 import (
+	"bytes"
 	"fmt"
-	"io"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -32,7 +32,6 @@ func RewriteImages(body, slug, sourceDir, mirrorDir string) (string, error) {
 
 	i := 0
 	for i < len(body) {
-		// Look for an image start: "![" preceded by neither "\\" nor "!".
 		startMarker := strings.Index(body[i:], "![")
 		if startMarker < 0 {
 			out.WriteString(body[i:])
@@ -124,7 +123,7 @@ func copyFileIdempotent(src, dest string) error {
 	if err != nil {
 		return fmt.Errorf("read %s: %w", src, err)
 	}
-	if existing, err := os.ReadFile(dest); err == nil && bytesEqual(existing, srcData) {
+	if existing, err := os.ReadFile(dest); err == nil && bytes.Equal(existing, srcData) {
 		return nil // identical — skip
 	}
 	if err := os.WriteFile(dest, srcData, 0o644); err != nil {
@@ -132,20 +131,3 @@ func copyFileIdempotent(src, dest string) error {
 	}
 	return nil
 }
-
-// bytesEqual is a thin wrapper to keep the io.ReadAll-based shape if we
-// ever switch to streaming for large files.
-func bytesEqual(a, b []byte) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
-}
-
-// readAll is kept around as a placeholder for streaming if needed later.
-var _ = io.ReadAll

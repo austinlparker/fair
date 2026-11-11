@@ -45,11 +45,10 @@ func validATURI(u string) bool {
 }
 
 // noRedirectPolicy is a CheckRedirect callback that refuses to follow
-// any HTTP redirects. Used on the build's HTTP client and the OAuth
-// loopback flow's HTTP client so a malicious PDS can't redirect us at
-// metadata-IP services on the build host (cloud-metadata SSRF, internal
-// CI runner exposure). XRPC endpoints don't redirect in normal
-// operation.
+// any HTTP redirects. Used on the build's HTTP client so a malicious
+// PDS can't redirect us at metadata-IP services on the build host
+// (cloud-metadata SSRF, internal CI runner exposure). XRPC endpoints
+// don't redirect in normal operation.
 func noRedirectPolicy(req *http.Request, via []*http.Request) error {
 	return http.ErrUseLastResponse
 }

@@ -1,19 +1,19 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <rss version="2.0" xmlns:content="http://purl.org/rss/1.0/modules/content/" xmlns:atom="http://www.w3.org/2005/Atom">
 <channel>
-<title>{{.Publication.Name}}</title>
+<title>{{html .Publication.Name}}</title>
 <link>{{.Publication.URL}}/</link>
-<description>{{.Publication.Description}}</description>
+<description>{{html .Publication.Description}}</description>
 <language>en</language>
 <atom:link href="{{.Publication.URL}}/rss.xml" rel="self" type="application/rss+xml"/>
 <lastBuildDate>{{.GeneratedAt.Format "Mon, 02 Jan 2006 15:04:05 -0700"}}</lastBuildDate>
 {{range .Posts}}<item>
-<title>{{.Title}}</title>
+<title>{{html .Title}}</title>
 <link>{{$.Publication.URL}}{{.Path}}/</link>
 <guid isPermaLink="true">{{$.Publication.URL}}{{.Path}}/</guid>
 <pubDate>{{.PublishedAt.Format "Mon, 02 Jan 2006 15:04:05 -0700"}}</pubDate>
-{{if .Description}}<description>{{.Description}}</description>{{end}}
-<content:encoded><![CDATA[{{.HTMLBody}}]]></content:encoded>
+{{if .Description}}<description>{{html .Description}}</description>{{end}}
+<content:encoded><![CDATA[{{cdata .HTMLBody}}]]></content:encoded>
 {{range .Tags}}<category>{{.}}</category>
 {{end}}</item>
 {{end}}</channel>

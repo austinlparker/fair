@@ -36,7 +36,7 @@ func Canonical(fm Frontmatter) []byte {
 	if fm.Slug != "" {
 		fmt.Fprintf(&b, "slug: %s\n", fm.Slug)
 	}
-	if tags := normalizeTags(fm.Tags); len(tags) > 0 {
+	if tags := NormalizeTags(fm.Tags); len(tags) > 0 {
 		fmt.Fprintf(&b, "tags: [%s]\n", strings.Join(tags, ", "))
 	}
 	if fm.Title != "" {
@@ -47,9 +47,10 @@ func Canonical(fm Frontmatter) []byte {
 	return []byte(b.String())
 }
 
-// normalizeTags returns tags with whitespace trimmed, lowercased, deduped,
-// and sorted. Empty tags after trimming are dropped.
-func normalizeTags(in []string) []string {
+// NormalizeTags returns tags with whitespace trimmed, lowercased, deduped,
+// and sorted. Empty tags after trimming are dropped. The publish flow
+// writes this same form to the record so hash and PDS agree.
+func NormalizeTags(in []string) []string {
 	seen := make(map[string]struct{}, len(in))
 	out := make([]string, 0, len(in))
 	for _, t := range in {

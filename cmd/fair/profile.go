@@ -5,11 +5,13 @@ import (
 	"crypto/x509"
 	"fmt"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
 
 	"aparker.io/fair/internal/atproto"
 	"aparker.io/fair/internal/config"
+	"github.com/lestrrat-go/jwx/v2/jwk"
 	"github.com/spf13/cobra"
 )
 
@@ -54,41 +56,96 @@ func resolveProfileAndLoad(cmd *cobra.Command) (string, *config.Config, error) {
 	return profile, cfg, nil
 }
 
-// newAuthedClient builds an atproto.Client from the persisted session
-// for profile and refreshes the access token if it's expired. Used by
-// every subcommand that needs to make authenticated XRPC calls.
-//
-// The refresh dance:
-//   - load client signing key (used for client_assertion JWTs in PAR/refresh)
-//   - compute client_id (loopback form for sandbox, metadata-URL for prod)
-//   - call Client.RefreshIfNeeded which is a no-op when the session
-//     hasn't expired
-//
-// Failures here surface as clear "please re-login" errors so the user
-// knows what to do.
-func newAuthedClient(ctx context.Context, cmd *cobra.Command, cfg *config.Config, profile string, rootCAs *x509.CertPool) (*atproto.Client, error) {
+// sessionStore returns the profile-keyed token store under --config-dir.
+func sessionStore(cmd *cobra.Command) *atproto.FileStore {
 	configDir, _ := cmd.Flags().GetString("config-dir")
-	store := atproto.NewFileStore(filepath.Join(configDir, "sessions"))
-	client, err := atproto.NewClient(profile, store, rootCAs)
-	if err != nil {
-		return nil, fmt.Errorf("%w (run `fair --profile %s auth login`)", err, profile)
-	}
+	return atproto.NewFileStore(filepath.Join(configDir, "sessions"))
+}
 
-	keyPath := filepath.Join(configDir, "client-key."+profile+".json")
-	clientKey, err := atproto.LoadOrCreateClientKey(keyPath)
+// loadClientKey returns the profile's persistent client signing key,
+// creating it on first use.
+func loadClientKey(cmd *cobra.Command, profile string) (jwk.Key, error) {
+	configDir, _ := cmd.Flags().GetString("config-dir")
+	return atproto.LoadOrCreateClientKey(filepath.Join(configDir, "client-key."+profile+".json"))
+}
+
+// loadRootCAs reads the --ca-bundle persistent flag. nil means "use
+// system trust".
+func loadRootCAs(cmd *cobra.Command) (*x509.CertPool, error) {
+	caBundle, _ := cmd.Flags().GetString("ca-bundle")
+	return atproto.LoadExtraRoots(caBundle)
+}
+
+// oauthClientID is the client_id for the profile. Loopback mode
+// (sandbox) uses the http://localhost form so the PDS auto-generates
+// client metadata without fetching a document; otherwise it's the URL
+// of the metadata document the build flow deploys under the profile's
+// domain.
+func oauthClientID(cfg *config.Config) string {
+	if cfg.LoopbackClient {
+		return atproto.LoopbackClientID(atproto.LoopbackRedirectPath)
+	}
+	return strings.TrimRight(cfg.Domain, "/") + "/.well-known/oauth-client-metadata.json"
+}
+
+// authed is what an authenticated subcommand needs to do its work.
+type authed struct {
+	ctx     context.Context
+	stop    context.CancelFunc
+	profile string
+	cfg     *config.Config
+	client  *atproto.Client
+}
+
+// appPasswordEnv, when set, switches authenticated subcommands from
+// the stored OAuth session to a one-shot app-password session. It
+// exists for headless runs (CI). Environment only, by design: a flag
+// would put the secret in shell history and process listings.
+const appPasswordEnv = "FAIR_APP_PASSWORD"
+
+// newAuthed resolves the profile, builds a SIGINT-aware context, and
+// returns an authenticated client. Every subcommand that makes
+// authenticated XRPC calls goes through here. Callers must defer
+// a.stop().
+//
+// Default mode is the stored OAuth session, refreshed if needed;
+// failures surface as "please re-login" errors naming the exact
+// command to run. With FAIR_APP_PASSWORD set, it signs in as the
+// profile's DID with that app password instead and touches no stored
+// session.
+func newAuthed(cmd *cobra.Command) (*authed, error) {
+	profile, cfg, err := resolveProfileAndLoad(cmd)
 	if err != nil {
 		return nil, err
 	}
+	rootCAs, err := loadRootCAs(cmd)
+	if err != nil {
+		return nil, err
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 
-	var clientID string
-	if cfg.LoopbackClient {
-		clientID = atproto.LoopbackClientID(atproto.LoopbackRedirectPath)
-	} else {
-		clientID = strings.TrimRight(cfg.Domain, "/") + "/.well-known/oauth-client-metadata.json"
+	if password := os.Getenv(appPasswordEnv); password != "" {
+		client, err := atproto.NewAppPasswordClient(ctx, cfg.PDSURL, cfg.DID, password, rootCAs)
+		if err != nil {
+			stop()
+			return nil, fmt.Errorf("app-password login (%s): %w", appPasswordEnv, err)
+		}
+		return &authed{ctx: ctx, stop: stop, profile: profile, cfg: cfg, client: client}, nil
 	}
 
-	if err := client.RefreshIfNeeded(ctx, clientID, clientKey, rootCAs); err != nil {
+	client, err := atproto.NewClient(profile, sessionStore(cmd), rootCAs)
+	if err != nil {
+		stop()
+		return nil, fmt.Errorf("%w (run `fair --profile %s auth login`)", err, profile)
+	}
+	clientKey, err := loadClientKey(cmd, profile)
+	if err != nil {
+		stop()
+		return nil, err
+	}
+	if err := client.RefreshIfNeeded(ctx, oauthClientID(cfg), clientKey, rootCAs); err != nil {
+		stop()
 		return nil, fmt.Errorf("refresh session: %w (try `fair --profile %s auth login`)", err, profile)
 	}
-	return client, nil
+	return &authed{ctx: ctx, stop: stop, profile: profile, cfg: cfg, client: client}, nil
 }

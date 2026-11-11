@@ -10,13 +10,13 @@ import (
 	htmltemplate "html/template"
 	"io"
 	"io/fs"
-	texttemplate "text/template"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	texttemplate "text/template"
 	"time"
 
 	"aparker.io/fair/internal/atproto"
@@ -123,16 +123,11 @@ func Build(ctx context.Context, cfg Config) (*Result, error) {
 		return nil, fmt.Errorf("emit client metadata: %w", err)
 	}
 
-	httpClient := &http.Client{
-		Timeout: 30 * time.Second,
-		// Refuse to follow redirects from the PDS — XRPC endpoints don't
-		// redirect normally, and a hostile PDS could otherwise bounce us
-		// to an internal/metadata service on the build host (SSRF).
-		CheckRedirect: noRedirectPolicy,
-	}
-	if cfg.CAPool != nil {
-		httpClient.Transport = caTransport(cfg.CAPool)
-	}
+	// Refuse to follow redirects from the PDS — XRPC endpoints don't
+	// redirect normally, and a hostile PDS could otherwise bounce us
+	// to an internal/metadata service on the build host (SSRF).
+	httpClient := atproto.NewHTTPClient(cfg.CAPool)
+	httpClient.CheckRedirect = noRedirectPolicy
 
 	// Step 3: try to fetch the publication record.
 	pub, err := fetchPublication(ctx, httpClient, cfg.PDSURL, cfg.DID)
@@ -171,7 +166,7 @@ func Build(ctx context.Context, cfg Config) (*Result, error) {
 
 	if pub == nil {
 		// Cold start: emit minimal site, atomic-promote, return.
-		if err := emitColdStart(tmpOut, siteData); err != nil {
+		if err := writeSiteFiles(tmpOut, siteData); err != nil {
 			return nil, err
 		}
 		if err := AtomicPromote(tmpOut, cfg.DistDir); err != nil {
@@ -316,32 +311,8 @@ func Build(ctx context.Context, cfg Config) (*Result, error) {
 		}
 	}
 
-	// Step 6: index, feed, sitemap, well-known, 404.
-	if err := writeRendered(tmpOut, "index.html", "index.html", siteData); err != nil {
-		return nil, err
-	}
-	if err := writeRendered(tmpOut, "feed.xml", "feed.xml", siteData); err != nil {
-		return nil, err
-	}
-	if err := writeRendered(tmpOut, "sitemap.xml", "sitemap.xml", siteData); err != nil {
-		return nil, err
-	}
-	if err := writeRendered(tmpOut, "404.html", "404.html", siteData); err != nil {
-		return nil, err
-	}
-	if err := writeRendered(tmpOut, ".well-known/site.standard.publication", "well-known-publication.json", siteData); err != nil {
-		return nil, err
-	}
-	if err := writeRendered(tmpOut, "robots.txt", "robots.txt", siteData); err != nil {
-		return nil, err
-	}
-	if err := writeRendered(tmpOut, "rss.xml", "rss.xml", siteData); err != nil {
-		return nil, err
-	}
-	if err := writeJSONFeed(tmpOut, siteData); err != nil {
-		return nil, err
-	}
-	if err := writeIndexJSON(tmpOut, siteData); err != nil {
+	// Step 6: index, feeds, sitemap, well-known, 404.
+	if err := writeSiteFiles(tmpOut, siteData); err != nil {
 		return nil, err
 	}
 
@@ -370,11 +341,10 @@ func Build(ctx context.Context, cfg Config) (*Result, error) {
 
 	// Archive: posts grouped by year, descending.
 	if len(posts) > 0 {
-		years := groupByYear(posts)
 		if err := writeRendered(tmpOut, "archive/index.html", "archive.html", struct {
 			Publication publicationView
 			Years       []yearSection
-		}{siteData.Publication, years}); err != nil {
+		}{siteData.Publication, siteData.Years}); err != nil {
 			return nil, err
 		}
 	}
@@ -396,30 +366,30 @@ func Build(ctx context.Context, cfg Config) (*Result, error) {
 	}, nil
 }
 
-// emitColdStart writes a complete-but-empty site so the well-known
-// endpoints, feed, sitemap, and index serve correctly even before any
-// publication record exists.
-func emitColdStart(tmpOut string, siteData siteContext) error {
+// writeSiteFiles renders every site-level file (everything that isn't
+// a per-post, tag, or archive page). With an empty siteData.Posts this
+// is the whole cold-start site: the well-known endpoints, feeds,
+// sitemap, and index all serve correctly before any record exists.
+func writeSiteFiles(tmpOut string, siteData siteContext) error {
 	for _, t := range []struct{ outRel, tmpl string }{
 		{"index.html", "index.html"},
-		{"feed.xml", "feed.xml"},
-		{"sitemap.xml", "sitemap.xml"},
 		{"404.html", "404.html"},
-		{".well-known/site.standard.publication", "well-known-publication.json"},
-		{"robots.txt", "robots.txt"},
+		{"feed.xml", "feed.xml"},
 		{"rss.xml", "rss.xml"},
+		{"sitemap.xml", "sitemap.xml"},
+		{"robots.txt", "robots.txt"},
 	} {
 		if err := writeRendered(tmpOut, t.outRel, t.tmpl, siteData); err != nil {
 			return err
 		}
 	}
+	if err := writeWellKnownPublication(tmpOut, siteData); err != nil {
+		return err
+	}
 	if err := writeJSONFeed(tmpOut, siteData); err != nil {
 		return err
 	}
-	if err := writeIndexJSON(tmpOut, siteData); err != nil {
-		return err
-	}
-	return nil
+	return writeIndexJSON(tmpOut, siteData)
 }
 
 // writeRendered renders the named template into <tmpOut>/<outRel>.
@@ -452,11 +422,17 @@ func renderTemplate(w io.Writer, name string, data any) error {
 		}
 		return t.Execute(w, data)
 	}
-	t, err := texttemplate.New(name).Parse(string(src))
+	t, err := texttemplate.New(name).Funcs(texttemplate.FuncMap{"cdata": cdataSafe}).Parse(string(src))
 	if err != nil {
 		return fmt.Errorf("parse text template %s: %w", name, err)
 	}
 	return t.Execute(w, data)
+}
+
+// cdataSafe makes s safe to embed in a CDATA section by splitting any
+// "]]>" terminator across two sections.
+func cdataSafe(s htmltemplate.HTML) string {
+	return strings.ReplaceAll(string(s), "]]>", "]]]]><![CDATA[>")
 }
 
 // isHTMLTemplate returns true for files whose output should be auto-
@@ -474,13 +450,6 @@ func coalesce(values ...string) string {
 		}
 	}
 	return ""
-}
-
-// caTransport returns an http.Transport pinned to the given pool.
-func caTransport(pool *x509.CertPool) http.RoundTripper {
-	t := http.DefaultTransport.(*http.Transport).Clone()
-	t.TLSClientConfig = httpsClientConfig(pool)
-	return t
 }
 
 // --- view types -------------------------------------------------------------
@@ -501,17 +470,17 @@ type postNeighbor struct {
 
 type postView struct {
 	Title          string
-	Path           string             // leading slash, no trailing slash
-	AbsoluteURL    string             // publication.URL + path + "/"
-	ATURI          htmltemplate.URL   // at://did/site.standard.document/<rkey> (marked safe so html/template doesn't rewrite to #ZgotmplZ)
-	PdsLsURL       string             // https://pdsls.dev/at://... — web viewer for the canonical record
+	Path           string           // leading slash, no trailing slash
+	AbsoluteURL    string           // publication.URL + path + "/"
+	ATURI          htmltemplate.URL // at://did/site.standard.document/<rkey> (marked safe so html/template doesn't rewrite to #ZgotmplZ)
+	PdsLsURL       string           // https://pdsls.dev/at://... — web viewer for the canonical record
 	PublishedAt    time.Time
 	UpdatedAt      time.Time
 	Lastmod        time.Time // = UpdatedAt or PublishedAt; precomputed for sitemap.xml
 	Description    string
 	HTMLBody       htmltemplate.HTML
-	CoverPath      string             // "/covers/<slug>.<ext>" for og:image + header <img>; empty when no cover blob
-	coverImage     *blobRef           // unexported: cover blob ref awaiting getBlob in Build's loop; not rendered
+	CoverPath      string   // "/covers/<slug>.<ext>" for og:image + header <img>; empty when no cover blob
+	coverImage     *blobRef // unexported: cover blob ref awaiting getBlob in Build's loop; not rendered
 	Tags           []string
 	BskyPostURL    string // bsky.app web URL derived from bskyPostRef
 	BskyPostAtURI  string // at-uri of the bsky discussion thread; used by the inline-JS comments fetch
@@ -613,8 +582,7 @@ type listRecordsResponse struct {
 }
 
 // fetchPublication returns the publication record for did, or nil when
-// the record is absent (404 from getRecord). Other errors are returned
-// as-is.
+// the PDS reports RecordNotFound. Other errors are returned as-is.
 func fetchPublication(ctx context.Context, hc *http.Client, pdsURL, did string) (*publicationRecord, error) {
 	q := url.Values{}
 	q.Set("repo", did)
@@ -631,12 +599,21 @@ func fetchPublication(ctx context.Context, hc *http.Client, pdsURL, did string) 
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode == http.StatusBadRequest || resp.StatusCode == http.StatusNotFound {
-		// PDS returns 400 with InvalidRequest on a missing record.
-		return nil, nil
-	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("getRecord status %d", resp.StatusCode)
+		// Only a positive "this record does not exist" counts as a cold
+		// start. Any other failure (wrong DID, PDS hiccup, bad request)
+		// must abort the build — treating it as "no publication" would
+		// promote an empty stub site over the real one.
+		var xerr struct {
+			Error   string `json:"error"`
+			Message string `json:"message"`
+		}
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+		_ = json.Unmarshal(body, &xerr)
+		if xerr.Error == "RecordNotFound" {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("getRecord status %d: %s %s", resp.StatusCode, xerr.Error, xerr.Message)
 	}
 	var out struct {
 		Value publicationRecord `json:"value"`
@@ -648,17 +625,17 @@ func fetchPublication(ctx context.Context, hc *http.Client, pdsURL, did string) 
 }
 
 type publicationRecord struct {
-	URL         string    `json:"url"`
-	Name        string    `json:"name"`
-	Description string    `json:"description,omitempty"`
-	Icon        *blobRef  `json:"icon,omitempty"`
+	URL         string   `json:"url"`
+	Name        string   `json:"name"`
+	Description string   `json:"description,omitempty"`
+	Icon        *blobRef `json:"icon,omitempty"`
 }
 
 // blobRef is the JSON shape of an ATProto typed blob. We only use it
 // to extract the CID + mimeType for fetching the icon via getBlob.
 type blobRef struct {
-	Type     string `json:"$type"`
-	Ref      struct {
+	Type string `json:"$type"`
+	Ref  struct {
 		Link string `json:"$link"`
 	} `json:"ref"`
 	MimeType string `json:"mimeType"`
@@ -761,9 +738,6 @@ func documentToPostView(d rawDocument, publicationURL string) (postView, error) 
 	path := strings.TrimRight(v.Path, "/")
 	absoluteURL := pub.URL + path + "/"
 
-	// Extract rkey from the at-uri tail for the ATProto-canonical
-	// alternate link. d.URI looks like
-	// "at://did:plc:.../site.standard.document/<rkey>".
 	atURI := d.URI
 
 	bskyPostURL := ""
@@ -849,7 +823,3 @@ func copyImagesMirror(src, dest string) error {
 		return os.WriteFile(target, data, 0o644)
 	})
 }
-
-// _ keeps markdown imported for the future render pipeline if we move
-// transforms here.
-var _ = markdown.Normalize

@@ -2,6 +2,10 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -159,5 +163,78 @@ func TestEmitClientMetadata_RequiresOutFlag(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "out") {
 		t.Errorf("error %q should mention --out", err.Error())
+	}
+}
+
+// End-to-end through the CLI with FAIR_APP_PASSWORD: createSession,
+// then publish --all against a fake PDS using the bearer token.
+func TestPublishAll_AppPassword(t *testing.T) {
+	var puts, badAuth int
+	pds := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/xrpc/com.atproto.server.createSession":
+			var in struct{ Identifier, Password string }
+			_ = json.NewDecoder(r.Body).Decode(&in)
+			if in.Identifier != "did:plc:ci" || in.Password != "app-pass" {
+				w.WriteHeader(http.StatusUnauthorized)
+				fmt.Fprint(w, `{"error":"AuthenticationRequired","message":"bad credentials"}`)
+				return
+			}
+			fmt.Fprint(w, `{"accessJwt":"tok123","refreshJwt":"r","handle":"ci.test","did":"did:plc:ci"}`)
+		case "/xrpc/com.atproto.repo.putRecord":
+			if r.Header.Get("Authorization") != "Bearer tok123" {
+				badAuth++
+			}
+			puts++
+			fmt.Fprint(w, `{"uri":"at://did:plc:ci/site.standard.document/x","cid":"bafy"}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer pds.Close()
+
+	content := t.TempDir()
+	for _, slug := range []string{"one", "two"} {
+		dir := filepath.Join(content, slug)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		src := "---\ntitle: " + slug + "\ndate: \"2025-04-17\"\n---\n\nbody\n"
+		if err := os.WriteFile(filepath.Join(dir, "index.md"), []byte(src), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	dir := writeProfileConfig(t, map[string]string{"ci": fmt.Sprintf(`pds_url = %q
+did = "did:plc:ci"
+domain = "https://example.com"
+publication_name = "CI"
+blog_posts = %q
+state_file = %q
+images_mirror = %q
+`, pds.URL, content, filepath.Join(content, ".fair", "state.json"), filepath.Join(content, "images-mirror"))})
+
+	args := []string{"--config-dir", dir, "--profile", "ci", "publish", "--all"}
+	out, err := runCLI(t, args, map[string]string{"FAIR_APP_PASSWORD": "app-pass"})
+	if err != nil {
+		t.Fatalf("publish --all: %v\n%s", err, out)
+	}
+	if puts != 2 || badAuth != 0 {
+		t.Errorf("puts=%d badAuth=%d, want 2 and 0\n%s", puts, badAuth, out)
+	}
+
+	out, err = runCLI(t, args, nil)
+	if err != nil {
+		t.Fatalf("second run: %v\n%s", err, out)
+	}
+	if puts != 2 || strings.Count(out, "skipped") != 2 {
+		t.Errorf("second run should skip both posts: puts=%d\n%s", puts, out)
+	}
+
+	if _, err := runCLI(t, args, map[string]string{"FAIR_APP_PASSWORD": "wrong"}); err == nil {
+		t.Error("expected failure with a bad app password")
+	}
+	if _, err := runCLI(t, append(args, "one/index.md"), nil); err == nil {
+		t.Error("expected --all plus a path to be rejected")
 	}
 }

@@ -1,10 +1,10 @@
-// Package ops implements the operational livability commands the
-// publish/build flow needs to be pleasant: ls (PDS vs local diff),
-// doctor (health check), pull (PDS -> markdown recovery), unpublish
-// (delete a record), rename (atomic re-rkey).
+// Package ops implements the operational commands around the
+// publish/build flow: ls (PDS vs local diff), doctor (health check),
+// and unpublish (delete a record).
 package ops
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -12,196 +12,115 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
+	"strings"
 
 	"aparker.io/fair/internal/atproto"
 	"aparker.io/fair/internal/markdown"
 	"aparker.io/fair/internal/publish"
 )
 
-// LsRow is one row of the `fair ls` output. Status reflects whether
-// each post is on PDS only, local only, in both, or in conflict.
+// Ls row statuses, in display order.
+const (
+	StatusSynced    = "synced"     // record on PDS and a local post claim the same rkey
+	StatusConflict  = "conflict"   // more than one local post claims the same rkey
+	StatusPDSOnly   = "pds-only"   // record on PDS with no local source
+	StatusLocalOnly = "local-only" // local post with no record on PDS
+)
+
+// LsRow is one row of the `fair ls` output.
 type LsRow struct {
-	Status string // "synced" | "pds-only" | "local-only" | "conflict"
-	Rkey   string // rkey on PDS (empty for local-only)
-	ID     string // ULID from frontmatter or PDS record (empty when missing)
-	Title  string // best-known title
-	Path   string // local file path (empty for pds-only) or PDS path
-	Detail string // free-form note (e.g., conflict description)
+	Status string
+	Rkey   string // empty for a local post that has never been published
+	Title  string
+	Path   string // local path relative to blog_posts; the record's path field for pds-only
+	Detail string
 }
 
-// Ls compares the local blog-posts/ tree against the PDS
-// site.standard.document collection. Source of truth for identity is
-// the ULID id in frontmatter (local) and the matching state.json entry
-// (PDS-side rkey lookup).
+// RecordLister is the slice of the authenticated client Ls uses.
+type RecordLister interface {
+	ListRecords(ctx context.Context, collection, cursor string, limit int) (*atproto.ListRecordsOutput, error)
+}
+
+// Ls compares the local authoring tree against the PDS
+// site.standard.document collection. Posts are matched by the TID rkey
+// in their frontmatter, so the result doesn't depend on local state
+// and is the same on any machine with a checkout of the content.
 //
-// Returned rows are sorted: synced first, then conflicts, pds-only,
-// local-only.
-func Ls(ctx context.Context, client *atproto.Client, blogPosts, stateFile string) ([]LsRow, error) {
-	state, err := publish.LoadState(stateFile)
-	if err != nil {
-		return nil, err
+// "synced" means the record exists on both sides, not that the content
+// is identical — `fair publish --dry-run` answers that per post.
+func Ls(ctx context.Context, client RecordLister, blogPosts string) ([]LsRow, error) {
+	type pdsDoc struct{ Title, Path string }
+	pds := map[string]pdsDoc{}
+	for cursor := ""; ; {
+		page, err := client.ListRecords(ctx, "site.standard.document", cursor, 100)
+		if err != nil {
+			return nil, fmt.Errorf("listRecords: %w", err)
+		}
+		for _, item := range page.Records {
+			var v pdsDoc
+			_ = json.Unmarshal(item.Value, &v) // best effort: a malformed record still gets a row
+			pds[item.URI[strings.LastIndexByte(item.URI, '/')+1:]] = v
+		}
+		if page.Cursor == "" || len(page.Records) == 0 {
+			break
+		}
+		cursor = page.Cursor
 	}
 
-	// Load PDS records.
-	listing, err := client.ListRecords(ctx, "site.standard.document", "", 100)
-	if err != nil {
-		return nil, fmt.Errorf("listRecords: %w", err)
-	}
-	pdsByRkey := map[string]pdsDoc{}
-	for _, item := range listing.Records {
-		var v struct {
-			Title string `json:"title"`
-			Path  string `json:"path"`
-		}
-		_ = json.Unmarshal(item.Value, &v)
-		rkey := rkeyFromAtURI(item.URI)
-		entry, _ := state.Entries[rkey]
-		pdsByRkey[rkey] = pdsDoc{
-			URI:   item.URI,
-			Title: v.Title,
-			Path:  v.Path,
-			ID:    entry.ID,
-		}
-	}
-
-	// Walk blog-posts/.
-	localByID := map[string]localPost{}
-	localUnclaimed := []localPost{} // no id in frontmatter yet
+	var rows []LsRow
+	claimed := map[string]string{} // rkey -> relative path of the first local post claiming it
 	if blogPosts != "" {
-		err := filepath.WalkDir(blogPosts, func(p string, d fs.DirEntry, err error) error {
-			if err != nil {
-				return err
-			}
-			if d.IsDir() || filepath.Base(p) != "index.md" {
-				return nil
-			}
-			src, readErr := os.ReadFile(p)
-			if readErr != nil {
-				return nil
-			}
-			fm, _, parseErr := markdown.Parse(string(src))
-			if parseErr != nil {
-				// Not a valid post; skip
-				return nil
-			}
-			lp := localPost{Path: p, Title: fm.Title, ID: fm.ID}
-			if fm.ID == "" {
-				localUnclaimed = append(localUnclaimed, lp)
-			} else {
-				localByID[fm.ID] = lp
-			}
-			return nil
-		})
+		posts, err := publish.FindPosts(blogPosts)
 		if err != nil && !errors.Is(err, fs.ErrNotExist) {
-			return nil, fmt.Errorf("walk blog-posts: %w", err)
+			return nil, fmt.Errorf("walk %s: %w", blogPosts, err)
+		}
+		for _, p := range posts {
+			src, err := os.ReadFile(p)
+			if err != nil {
+				return nil, err
+			}
+			fm, _, err := markdown.Parse(string(src))
+			if err != nil {
+				continue // not a publishable post (e.g. a draft without title/date)
+			}
+			rel, _ := filepath.Rel(blogPosts, p)
+			row := LsRow{Rkey: fm.Rkey, Title: fm.Title, Path: rel}
+			switch first, dup := claimed[fm.Rkey]; {
+			case fm.Rkey == "":
+				row.Status, row.Detail = StatusLocalOnly, "never published"
+			case dup:
+				row.Status, row.Detail = StatusConflict, "same rkey as "+first+" — publishing either overwrites the other"
+			default:
+				claimed[fm.Rkey] = rel
+				if _, onPDS := pds[fm.Rkey]; onPDS {
+					row.Status = StatusSynced
+				} else {
+					row.Status, row.Detail = StatusLocalOnly, "has an rkey but no PDS record (unpublished, or never published)"
+				}
+			}
+			rows = append(rows, row)
 		}
 	}
-
-	rows := []LsRow{}
-
-	// Cross-reference by ID via state.json: state.Entries[rkey].ID
-	// gives us the PDS record's ID; localByID gives us the local file's ID.
-	for rkey, doc := range pdsByRkey {
-		if doc.ID == "" {
-			// PDS has the record but we don't have the ID locally
-			// (state.json missing or older than this record). Show as
-			// pds-only with a hint; doctor / pull would reconcile.
+	for rkey, doc := range pds {
+		if _, ok := claimed[rkey]; !ok {
 			rows = append(rows, LsRow{
-				Status: "pds-only",
+				Status: StatusPDSOnly,
 				Rkey:   rkey,
 				Title:  doc.Title,
 				Path:   doc.Path,
-				Detail: "no local state entry — run `fair doctor` to rebuild state",
-			})
-			continue
-		}
-		local, hasLocal := localByID[doc.ID]
-		if hasLocal {
-			rel, _ := filepath.Rel(blogPosts, local.Path)
-			rows = append(rows, LsRow{
-				Status: "synced",
-				Rkey:   rkey,
-				ID:     doc.ID,
-				Title:  doc.Title,
-				Path:   rel,
-			})
-			delete(localByID, doc.ID)
-		} else {
-			rows = append(rows, LsRow{
-				Status: "pds-only",
-				Rkey:   rkey,
-				ID:     doc.ID,
-				Title:  doc.Title,
-				Path:   doc.Path,
-				Detail: "local source missing — `fair pull` to recover or `fair unpublish` to delete",
+				Detail: "no local source — `fair unpublish " + rkey + "` to delete",
 			})
 		}
 	}
 
-	// Anything left in localByID is local-only (id was assigned but
-	// the record isn't on PDS, e.g., never published or deleted).
-	for id, lp := range localByID {
-		rel, _ := filepath.Rel(blogPosts, lp.Path)
-		rows = append(rows, LsRow{
-			Status: "local-only",
-			ID:     id,
-			Title:  lp.Title,
-			Path:   rel,
-			Detail: "id present but no PDS record — run `fair publish`",
-		})
-	}
-	for _, lp := range localUnclaimed {
-		rel, _ := filepath.Rel(blogPosts, lp.Path)
-		rows = append(rows, LsRow{
-			Status: "local-only",
-			Title:  lp.Title,
-			Path:   rel,
-			Detail: "no id assigned — first `fair publish` will create one",
-		})
-	}
-
-	sort.SliceStable(rows, func(i, j int) bool {
-		return statusRank(rows[i].Status) < statusRank(rows[j].Status)
+	rank := map[string]int{StatusSynced: 0, StatusConflict: 1, StatusPDSOnly: 2, StatusLocalOnly: 3}
+	slices.SortFunc(rows, func(a, b LsRow) int {
+		return cmp.Or(
+			cmp.Compare(rank[a.Status], rank[b.Status]),
+			cmp.Compare(a.Path, b.Path),
+			cmp.Compare(a.Rkey, b.Rkey),
+		)
 	})
-
 	return rows, nil
-}
-
-func statusRank(s string) int {
-	switch s {
-	case "synced":
-		return 0
-	case "conflict":
-		return 1
-	case "pds-only":
-		return 2
-	case "local-only":
-		return 3
-	}
-	return 99
-}
-
-type pdsDoc struct {
-	URI   string
-	Title string
-	Path  string
-	ID    string
-}
-
-type localPost struct {
-	Path  string
-	Title string
-	ID    string
-}
-
-// rkeyFromAtURI returns the rkey portion of an at:// URI like
-// at://did:.../site.standard.document/<rkey>.
-func rkeyFromAtURI(uri string) string {
-	for i := len(uri) - 1; i >= 0; i-- {
-		if uri[i] == '/' {
-			return uri[i+1:]
-		}
-	}
-	return uri
 }

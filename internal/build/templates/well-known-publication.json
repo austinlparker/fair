@@ -1,6 +1,0 @@
-{
-  "$type": "site.standard.publication",
-  "url": "{{.Publication.URL}}",
-  "name": "{{.Publication.Name}}"{{if .Publication.Description}},
-  "description": "{{.Publication.Description}}"{{end}}
-}

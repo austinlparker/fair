@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"aparker.io/fair/internal/publish"
+	"github.com/rivo/uniseg"
 )
 
 func TestExtractDescription_FirstParagraph(t *testing.T) {
@@ -53,7 +54,7 @@ func TestExtractDescription_TruncatedAtGraphemeBoundary(t *testing.T) {
 	body := long + "\n"
 	got := publish.ExtractDescription(body)
 	// uniseg cluster count, not byte count
-	if uniLen := publish.GraphemeCount(got); uniLen > 3000 {
+	if uniLen := uniseg.GraphemeClusterCount(got); uniLen > 3000 {
 		t.Errorf("description not truncated: %d graphemes", uniLen)
 	}
 }
@@ -89,7 +90,16 @@ func TestExtractTextContent_NormalizesWhitespace(t *testing.T) {
 func TestExtractTextContent_TruncatedAt30000Graphemes(t *testing.T) {
 	long := strings.Repeat("hello world. ", 5000) // ~65000 chars
 	got := publish.ExtractTextContent(long)
-	if c := publish.GraphemeCount(got); c > 30000 {
+	if c := uniseg.GraphemeClusterCount(got); c > 30000 {
 		t.Errorf("not truncated: %d graphemes", c)
+	}
+}
+
+func TestExtractTextContent_SeparatesBlocks(t *testing.T) {
+	body := "# Heading\n\nFirst paragraph.\n\n- item one\n- item two\n\nLast.\n"
+	got := publish.ExtractTextContent(body)
+	want := "Heading First paragraph. item one item two Last."
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
 	}
 }

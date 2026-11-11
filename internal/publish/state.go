@@ -11,27 +11,25 @@ import (
 )
 
 // StateEntry is the per-rkey idempotency cache. LastHash short-circuits
-// re-publishing identical content; LastCoverHash decides whether the
-// cover blob needs re-uploading; ID anchors rename detection (slug
-// changes but ID stays).
+// re-publishing identical content; ID is the post's frontmatter ULID.
 type StateEntry struct {
 	ID              string    `json:"id"`
 	LastHash        string    `json:"last_hash"`
-	LastCoverHash   string    `json:"last_cover_hash,omitempty"`
 	LastPublishedAt time.Time `json:"last_published_at"`
 }
 
-// State is the on-disk publish-flow cache, indexed by the TID rkey. The
-// per-entry ID (the post's ULID) is the cross-machine identity `ls` uses
-// to reconcile PDS records against local markdown.
+// State is the on-disk publish-flow cache, indexed by the TID rkey. It is
+// only a cache: with no entry for a post, Publish compares against the
+// record on the PDS instead, so the file is safe to delete and doesn't
+// need to travel between machines.
 type State struct {
 	Entries map[string]StateEntry `json:"entries"`
 }
 
 // LoadState reads state JSON from path. A missing file returns an empty,
 // non-nil State; the publish flow treats "no state file yet" as "first
-// publish ever". Corrupt JSON is an error — the user should run `fair
-// doctor` to rebuild.
+// publish ever". Corrupt JSON is an error; deleting the file is safe
+// (the next publish of each post re-puts it and rebuilds the entry).
 func LoadState(path string) (*State, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -80,4 +78,3 @@ func (s *State) Save(path string) error {
 	}
 	return os.Rename(tmpName, path)
 }
-

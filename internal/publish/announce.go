@@ -13,10 +13,10 @@ import (
 // app.bsky.feed.post. Pulled out of the main publish flow so it can be
 // unit-tested without touching the full document pipeline.
 type AnnounceInput struct {
-	Title       string             // post title — used as the embed card title
-	Description string             // post description — used as the embed card description
-	URL         string             // canonical absolute URL of the article on the rendered site
-	CoverBlob   *atproto.BlobRef   // optional; used as the embed card thumbnail
+	Title       string           // post title — used as the embed card title
+	Description string           // post description — used as the embed card description
+	URL         string           // canonical absolute URL of the article on the rendered site
+	CoverBlob   *atproto.BlobRef // optional; used as the embed card thumbnail
 }
 
 // maxBskyPostText is the Bluesky post graphemes limit. We measure in
@@ -33,7 +33,7 @@ const maxBskyPostText = 300
 // The announce post body is "<title>\n\n<URL>" with a link card embed
 // pointing at the article URL. The embed reuses CoverBlob as its thumb
 // when one is supplied.
-func Announce(ctx context.Context, client *atproto.Client, in AnnounceInput) (uri, cid string, err error) {
+func Announce(ctx context.Context, client PDS, in AnnounceInput) (uri, cid string, err error) {
 	text := buildAnnounceText(in.Title, in.URL)
 
 	external := map[string]any{

@@ -62,14 +62,18 @@ func ExtractTextContent(body string) string {
 	var b strings.Builder
 	_ = ast.Walk(doc, func(n ast.Node, entering bool) (ast.WalkStatus, error) {
 		if !entering {
+			// Separate adjacent blocks; without this the last word of one
+			// paragraph fuses with the first word of the next.
+			if n.Type() == ast.TypeBlock {
+				b.WriteByte(' ')
+			}
 			return ast.WalkContinue, nil
 		}
 		switch v := n.(type) {
 		case *ast.FencedCodeBlock, *ast.CodeBlock:
-			// Skip both the fenced ``` blocks and indented code blocks.
 			return ast.WalkSkipChildren, nil
 		case *ast.Image:
-			// Take the alt text (children of Image are alt-text nodes).
+			// Children of an Image are its alt-text nodes.
 			b.WriteString(nodeText(v, []byte(body)))
 			b.WriteByte(' ')
 			return ast.WalkSkipChildren, nil
@@ -78,10 +82,6 @@ func ExtractTextContent(body string) string {
 			if v.SoftLineBreak() || v.HardLineBreak() {
 				b.WriteByte(' ')
 			}
-		case *ast.Paragraph, *ast.Heading, *ast.ListItem, *ast.Blockquote:
-			// Block boundaries — append a separator after the children
-			// have been visited. Done in the !entering branch is cleaner
-			// but we approximate here by adding a newline now.
 		}
 		return ast.WalkContinue, nil
 	})
@@ -165,10 +165,4 @@ func TruncateGraphemes(s string, max int) string {
 		_, end = g.Positions()
 	}
 	return s
-}
-
-// GraphemeCount returns the number of grapheme clusters in s. Exported
-// for tests; internal callers can use uniseg.GraphemeClusterCount.
-func GraphemeCount(s string) int {
-	return uniseg.GraphemeClusterCount(s)
 }

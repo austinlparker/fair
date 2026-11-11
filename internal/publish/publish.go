@@ -4,12 +4,13 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
-	"io/fs"
 	"mime"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -20,13 +21,15 @@ import (
 // Options control the publish flow's behavior.
 type Options struct {
 	// DryRun: parse, hash, and report what would happen, but never
-	// upload blobs, putRecord, or update state.json. Source markdown
-	// is still mutated to write back the ULID id (id assignment is
-	// load-bearing across runs).
+	// upload blobs, putRecord, announce, or update state.json. The local
+	// side effects still happen: id/rkey are written back to the source
+	// frontmatter (the rkey must be stable across runs) and inline
+	// images are staged into the mirror.
 	DryRun bool
 
 	// Force: bypass the content-hash short-circuit and re-put the
-	// record even when nothing changed. Advances updatedAt.
+	// record even when nothing changed. Advances updatedAt like any
+	// other re-put of an already-published post.
 	Force bool
 
 	// Announce: when true and the post has no existing bsky_post
@@ -81,10 +84,27 @@ type Result struct {
 	UpdatedAt    bool // true when updatedAt was advanced
 }
 
-// Publish runs the 13-step flow on a single markdown file. See
+// PDS is the slice of the authenticated client the publish flow uses.
+// *atproto.Client satisfies it; tests substitute a fake.
+type PDS interface {
+	DID() string
+	PutRecord(ctx context.Context, collection, rkey string, record any) (*atproto.RecordRef, error)
+	CreateRecord(ctx context.Context, collection string, record any) (*atproto.RecordRef, error)
+	GetRecord(ctx context.Context, collection, rkey string) (*atproto.GetRecordOutput, error)
+	UploadBlob(ctx context.Context, mimeType string, data []byte) (*atproto.BlobRef, error)
+}
+
+const documentCollection = "site.standard.document"
+
+// coverMimeTypes are the blob types the OAuth scope (atproto.BlogScopes)
+// lets us upload. Anything else is rejected by the PDS with an opaque
+// scope error, so we check up front.
+var coverMimeTypes = []string{"image/png", "image/jpeg", "image/webp"}
+
+// Publish runs the publish flow on a single markdown file. See
 // docs/design-plans/2026-04-29-blog-v2026.md §3 (publish flow) for the
 // step ordering rationale.
-func Publish(ctx context.Context, client *atproto.Client, sourcePath string, cfg Config, opts Options) (Result, error) {
+func Publish(ctx context.Context, client PDS, sourcePath string, cfg Config, opts Options) (Result, error) {
 	log := opts.Logger
 	if log == nil {
 		log = func(string, ...any) {}
@@ -166,9 +186,9 @@ func Publish(ctx context.Context, client *atproto.Client, sourcePath string, cfg
 		}
 		sum := sha256.Sum256(coverData)
 		coverHash = hex.EncodeToString(sum[:])
-		coverMime = mime.TypeByExtension(strings.ToLower(filepath.Ext(coverPath)))
-		if coverMime == "" {
-			coverMime = "application/octet-stream"
+		coverMime, _, _ = mime.ParseMediaType(mime.TypeByExtension(strings.ToLower(filepath.Ext(coverPath))))
+		if !slices.Contains(coverMimeTypes, coverMime) {
+			return Result{}, fmt.Errorf("cover %s: unsupported type (want png, jpeg, or webp)", coverPath)
 		}
 	}
 
@@ -179,36 +199,68 @@ func Publish(ctx context.Context, client *atproto.Client, sourcePath string, cfg
 		CoverSourceHash: coverHash,
 	})
 	prevEntry, hadEntry := state.Entries[rkey]
-	// --announce on a hash-unchanged post that's never been announced
+	unchanged := hadEntry && prevEntry.LastHash == hash
+	onPDS := hadEntry
+	skipReason := "hash unchanged"
+	if !hadEntry {
+		// No local state for this post: a fresh checkout, a CI runner,
+		// or a genuinely new post. The state file is only a cache — the
+		// PDS is canonical — so ask it. If the record there already
+		// matches the source, adopt it instead of re-putting. A lookup
+		// error (normally RecordNotFound) just means "publish it".
+		if existing, err := client.GetRecord(ctx, documentCollection, rkey); err == nil {
+			onPDS = true
+			unchanged = matchesPublished(existing.Value, publishedView{
+				Site:        cfg.PublicationURI,
+				Title:       fm.Title,
+				Path:        "/" + slug,
+				Date:        fm.Date,
+				Description: description,
+				Tags:        markdown.NormalizeTags(fm.Tags),
+				Text:        rewrittenBody,
+				CoverData:   coverData,
+				BskyPost:    fm.BskyPost,
+			})
+			skipReason = "matches PDS record"
+		}
+	}
+	// --announce on an unchanged post that's never been announced
 	// must NOT short-circuit: the announce flow needs to run, the
 	// document needs to be re-put with the new bskyPostRef, and the
 	// frontmatter needs to gain bsky_post:.
 	needsAnnounce := opts.Announce && fm.BskyPost == "" && !opts.DryRun
-	if hadEntry && prevEntry.LastHash == hash && !opts.Force && !needsAnnounce {
-		log("skip %s (hash unchanged)", slug)
+	if unchanged && !opts.Force && !needsAnnounce {
+		log("skip %s (%s)", slug, skipReason)
+		if !hadEntry && !opts.DryRun {
+			state.Entries[rkey] = StateEntry{ID: id, LastHash: hash, LastPublishedAt: time.Now().UTC()}
+			if err := state.Save(cfg.StateFile); err != nil {
+				return Result{}, fmt.Errorf("save state: %w", err)
+			}
+		}
 		return Result{
 			Rkey:    rkey,
-			DID:     client.Session().DID,
+			DID:     client.DID(),
 			Skipped: true,
-			Reason:  "hash unchanged",
+			Reason:  skipReason,
 		}, nil
 	}
 
 	if opts.DryRun {
 		log("would publish %s (force=%v, cover=%v, images-mirrored)", slug, opts.Force, fm.Cover != "")
-		return Result{Rkey: rkey, DID: client.Session().DID}, nil
+		return Result{Rkey: rkey, DID: client.DID()}, nil
 	}
 
-	// 9. Upload cover blob if size/contents changed.
+	// 9. Upload the cover. This runs on every real publish, not only
+	//    when the cover bytes changed: putRecord replaces the whole
+	//    record, so the blob ref has to be present each time or the
+	//    cover silently disappears on a body-only edit. Re-uploading
+	//    identical bytes is idempotent on the PDS (same CID back).
 	var coverBlob *atproto.BlobRef
 	if coverData != nil {
-		uploadNeeded := !hadEntry || prevEntry.LastCoverHash != coverHash || opts.Force
-		if uploadNeeded {
-			log("uploading cover (%d bytes, %s)", len(coverData), coverMime)
-			coverBlob, err = client.UploadBlob(ctx, coverMime, coverData)
-			if err != nil {
-				return Result{}, fmt.Errorf("upload cover: %w", err)
-			}
+		log("uploading cover (%d bytes, %s)", len(coverData), coverMime)
+		coverBlob, err = client.UploadBlob(ctx, coverMime, coverData)
+		if err != nil {
+			return Result{}, fmt.Errorf("upload cover: %w", err)
 		}
 	}
 
@@ -218,7 +270,7 @@ func Publish(ctx context.Context, client *atproto.Client, sourcePath string, cfg
 		return Result{}, fmt.Errorf("normalize publishedAt: %w", err)
 	}
 	record := map[string]any{
-		"$type":       "site.standard.document",
+		"$type":       documentCollection,
 		"site":        cfg.PublicationURI,
 		"title":       fm.Title,
 		"publishedAt": publishedAt,
@@ -237,7 +289,7 @@ func Publish(ctx context.Context, client *atproto.Client, sourcePath string, cfg
 		record["coverImage"] = coverBlob
 	}
 	if len(fm.Tags) > 0 {
-		record["tags"] = canonicalTags(fm.Tags)
+		record["tags"] = markdown.NormalizeTags(fm.Tags)
 	}
 	if fm.BskyPost != "" {
 		// Resolve the at-uri to a CID and emit a strongRef per the
@@ -291,15 +343,18 @@ func Publish(ctx context.Context, client *atproto.Client, sourcePath string, cfg
 			CoverSourceHash: coverHash,
 		})
 	}
+	// Any re-put of a post that's already on the PDS is an update. (This
+	// also keeps updatedAt from vanishing on --force: the record is
+	// rebuilt from scratch, so omitting the field would delete it.)
 	updatedAtAdvanced := false
-	if hadEntry && prevEntry.LastHash != hash {
+	if onPDS {
 		record["updatedAt"] = time.Now().UTC().Format(time.RFC3339)
 		updatedAtAdvanced = true
 	}
 
 	// 11. PutRecord.
-	log("putRecord %s/%s", "site.standard.document", rkey)
-	ref, err := client.PutRecord(ctx, "site.standard.document", rkey, record)
+	log("putRecord %s/%s", documentCollection, rkey)
+	ref, err := client.PutRecord(ctx, documentCollection, rkey, record)
 	if err != nil {
 		return Result{}, err
 	}
@@ -309,16 +364,15 @@ func Publish(ctx context.Context, client *atproto.Client, sourcePath string, cfg
 	state.Entries[rkey] = StateEntry{
 		ID:              id,
 		LastHash:        hash,
-		LastCoverHash:   coverHash,
 		LastPublishedAt: time.Now().UTC(),
 	}
 	if err := state.Save(cfg.StateFile); err != nil {
-		return Result{}, fmt.Errorf("published OK but local state save failed: %w. Run `fair doctor` to recover", err)
+		return Result{}, fmt.Errorf("published OK but local state save failed: %w (the next publish of this post will re-put it)", err)
 	}
 
 	return Result{
 		Rkey:         rkey,
-		DID:          client.Session().DID,
+		DID:          client.DID(),
 		URI:          ref.URI,
 		CID:          ref.CID,
 		BlobUploaded: coverBlob != nil,
@@ -326,30 +380,67 @@ func Publish(ctx context.Context, client *atproto.Client, sourcePath string, cfg
 	}, nil
 }
 
-// canonicalTags returns a copy of tags lowercased, trimmed, deduped,
-// and sorted. Matches the Canonical()/Hash() normalization so the same
-// tag set always produces the same on-PDS list.
-func canonicalTags(in []string) []string {
-	seen := map[string]struct{}{}
-	out := make([]string, 0, len(in))
-	for _, t := range in {
-		t = strings.ToLower(strings.TrimSpace(t))
-		if t == "" {
-			continue
-		}
-		if _, ok := seen[t]; ok {
-			continue
-		}
-		seen[t] = struct{}{}
-		out = append(out, t)
+// publishedView is the author-controlled content of a document, in the
+// form the publish flow would write it. textContent and updatedAt are
+// derived, so they're not part of the comparison.
+type publishedView struct {
+	Site, Title, Path string
+	Date              string // frontmatter form; normalized before comparing
+	Description       string
+	Tags              []string
+	Text              string
+	CoverData         []byte // nil when the post has no cover
+	BskyPost          string
+}
+
+// matchesPublished reports whether the record value fetched from the
+// PDS already carries exactly the content in want.
+func matchesPublished(value json.RawMessage, want publishedView) bool {
+	var got struct {
+		Site        string   `json:"site"`
+		Title       string   `json:"title"`
+		Path        string   `json:"path"`
+		PublishedAt string   `json:"publishedAt"`
+		Description string   `json:"description"`
+		Tags        []string `json:"tags"`
+		Content     struct {
+			Text string `json:"text"`
+		} `json:"content"`
+		CoverImage *struct {
+			Ref struct {
+				Link string `json:"$link"`
+			} `json:"ref"`
+		} `json:"coverImage"`
+		BskyPostRef *struct {
+			URI string `json:"uri"`
+		} `json:"bskyPostRef"`
 	}
-	// Caller may want stable order across runs; sort.
-	for i := 1; i < len(out); i++ {
-		for j := i; j > 0 && out[j-1] > out[j]; j-- {
-			out[j-1], out[j] = out[j], out[j-1]
-		}
+	if err := json.Unmarshal(value, &got); err != nil {
+		return false
 	}
-	return out
+	publishedAt, err := normalizeRFC3339(want.Date)
+	if err != nil {
+		return false
+	}
+	var gotCover, wantCover, gotBsky string
+	if got.CoverImage != nil {
+		gotCover = got.CoverImage.Ref.Link
+	}
+	if want.CoverData != nil {
+		wantCover = atproto.BlobCIDFor(want.CoverData)
+	}
+	if got.BskyPostRef != nil {
+		gotBsky = got.BskyPostRef.URI
+	}
+	return got.Site == want.Site &&
+		got.Title == want.Title &&
+		got.Path == want.Path &&
+		got.PublishedAt == publishedAt &&
+		got.Description == want.Description &&
+		slices.Equal(got.Tags, want.Tags) &&
+		got.Content.Text == want.Text &&
+		gotCover == wantCover &&
+		gotBsky == want.BskyPost
 }
 
 // normalizeRFC3339 accepts gray-matter-style date strings ("2025-04-17",
@@ -369,11 +460,3 @@ func normalizeRFC3339(s string) (string, error) {
 	}
 	return "", fmt.Errorf("unrecognized date format %q (want RFC3339 or YYYY-MM-DD)", s)
 }
-
-// errIsNotExist is a small helper kept around to avoid shadowing the
-// stdlib name in places that don't import errors.
-func errIsNotExist(err error) bool {
-	return errors.Is(err, fs.ErrNotExist)
-}
-
-var _ = errIsNotExist // future use: tightening cover-missing error class

@@ -1,6 +1,6 @@
 // Package publish implements the markdown -> standard.site PDS record
-// pipeline. The orchestrator (Publish in publish.go) drives the 13-step
-// flow documented in docs/design-plans/2026-04-29-blog-v2026.md §3.
+// pipeline. The orchestrator (Publish in publish.go) drives the flow
+// documented in docs/design-plans/2026-04-29-blog-v2026.md §3.
 package publish
 
 import (
@@ -16,43 +16,11 @@ import (
 )
 
 // EnsureID returns the post's stable ULID identity, writing it back into
-// the source markdown frontmatter if missing. This is the only place the
-// CLI mutates files in blog-posts/ and the only thing it writes there.
-//
-// The ID is load-bearing for rename detection: identity follows the ID,
-// not the file path. Once written, the file is "owned" by the publish
-// pipeline; subsequent runs use the same ID even if the file moves.
+// the source markdown frontmatter if missing.
 func EnsureID(path string) (string, error) {
-	src, err := os.ReadFile(path)
-	if err != nil {
-		return "", fmt.Errorf("read %s: %w", path, err)
-	}
-	fm, body, err := markdown.Parse(string(src))
-	if err != nil {
-		return "", fmt.Errorf("parse %s: %w", path, err)
-	}
-	if fm.ID != "" {
-		return fm.ID, nil
-	}
-
-	id, err := generateULID()
-	if err != nil {
-		return "", err
-	}
-	updated, err := writeBackID(string(src), body, id)
-	if err != nil {
-		return "", err
-	}
-	// Atomic write: temp file + rename in same dir.
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, []byte(updated), 0o644); err != nil {
-		return "", fmt.Errorf("write %s: %w", tmp, err)
-	}
-	if err := os.Rename(tmp, path); err != nil {
-		_ = os.Remove(tmp)
-		return "", fmt.Errorf("rename %s -> %s: %w", tmp, path, err)
-	}
-	return id, nil
+	return ensureFrontmatterKey(path, "id",
+		func(fm markdown.Frontmatter) string { return fm.ID },
+		generateULID)
 }
 
 // EnsureRkey returns the post's TID record key, writing it back into the
@@ -62,10 +30,17 @@ func EnsureID(path string) (string, error) {
 // machine with no local state) target the same record instead of
 // creating a duplicate.
 //
-// This is distinct from the ULID id (cross-machine identity for `ls`
-// reconciliation) and from the slug (which drives the URL via the record
-// `path` field). The rkey is the PDS record key only.
+// This is distinct from the slug, which drives the URL via the record
+// `path` field. The rkey is the PDS record key only.
 func EnsureRkey(path string) (string, error) {
+	return ensureFrontmatterKey(path, "rkey",
+		func(fm markdown.Frontmatter) string { return fm.Rkey },
+		func() (string, error) { return syntax.NewTIDNow(0).String(), nil })
+}
+
+// ensureFrontmatterKey returns the existing value of a frontmatter key,
+// or generates one and writes it back as the first frontmatter line.
+func ensureFrontmatterKey(path, key string, get func(markdown.Frontmatter) string, generate func() (string, error)) (string, error) {
 	src, err := os.ReadFile(path)
 	if err != nil {
 		return "", fmt.Errorf("read %s: %w", path, err)
@@ -74,73 +49,86 @@ func EnsureRkey(path string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("parse %s: %w", path, err)
 	}
-	if fm.Rkey != "" {
-		return fm.Rkey, nil
+	if v := get(fm); v != "" {
+		return v, nil
 	}
-
-	rkey := syntax.NewTIDNow(0).String()
-	updated, err := writeBackRkey(string(src), rkey)
+	value, err := generate()
 	if err != nil {
 		return "", err
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, []byte(updated), 0o644); err != nil {
-		return "", fmt.Errorf("write %s: %w", tmp, err)
+	updated, err := insertFrontmatterLine(string(src), key+": "+value, true)
+	if err != nil {
+		return "", fmt.Errorf("%s: %w", path, err)
 	}
-	if err := os.Rename(tmp, path); err != nil {
-		_ = os.Remove(tmp)
-		return "", fmt.Errorf("rename %s -> %s: %w", tmp, path, err)
+	if err := writeFileAtomic(path, updated); err != nil {
+		return "", err
 	}
-	return rkey, nil
+	return value, nil
 }
 
-// generateULID produces a Crockford-base32 ULID using the current
-// monotonic time + random entropy.
+// generateULID produces a Crockford-base32 ULID from the current time
+// plus random entropy.
 func generateULID() (string, error) {
-	t := ulid.Timestamp(time.Now())
-	id, err := ulid.New(t, rand.Reader)
+	id, err := ulid.New(ulid.Timestamp(time.Now()), rand.Reader)
 	if err != nil {
 		return "", fmt.Errorf("generate ULID: %w", err)
 	}
 	return id.String(), nil
 }
 
-// writeBackBskyPost inserts a `bsky_post: <at-uri>` line into the YAML
+// writeBackBskyPost appends a `bsky_post: <at-uri>` line to the YAML
 // frontmatter of the file at path. Used after a successful --announce
-// to record the announce post's at-uri so future runs reuse it
-// (idempotency). If the file already has a bsky_post line, this is a
-// no-op (the announce flow shouldn't have run in that case anyway).
+// so future runs reuse the announce post instead of creating another.
 func writeBackBskyPost(path, atURI string) error {
 	src, err := os.ReadFile(path)
 	if err != nil {
 		return fmt.Errorf("read %s: %w", path, err)
 	}
-	if strings.Contains(string(src), "bsky_post:") {
-		return nil
+	updated, err := insertFrontmatterLine(string(src), `bsky_post: "`+atURI+`"`, false)
+	if err != nil {
+		return fmt.Errorf("%s: %w", path, err)
 	}
-	const fence = "---\n"
-	rest, ok := strings.CutPrefix(string(src), fence)
+	return writeFileAtomic(path, updated)
+}
+
+// insertFrontmatterLine adds one `key: value` line to the frontmatter
+// of src — as the first key when first is true, otherwise the last —
+// and leaves every other byte of the file untouched. We don't re-marshal
+// through yaml.v3 because that would drop the author's comments and
+// quoting choices.
+func insertFrontmatterLine(src, line string, first bool) (string, error) {
+	rest, ok := strings.CutPrefix(src, "---\n")
+	opening := "---\n"
 	if !ok {
-		rest, ok = strings.CutPrefix(string(src), "---\r\n")
+		rest, ok = strings.CutPrefix(src, "---\r\n")
+		opening = "---\r\n"
 		if !ok {
-			return fmt.Errorf("source does not start with --- frontmatter fence")
+			return "", fmt.Errorf("source does not start with --- frontmatter fence")
 		}
 	}
-	closingIdx := strings.Index(rest, "\n---")
-	if closingIdx < 0 {
-		return fmt.Errorf("missing closing frontmatter fence")
+	// The closing fence is the first line that is exactly "---". An
+	// empty frontmatter block puts it at the very start of rest.
+	var fmYAML, tail string
+	if strings.HasPrefix(rest, "---") {
+		tail = rest
+	} else {
+		idx := strings.Index(rest, "\n---")
+		if idx < 0 {
+			return "", fmt.Errorf("missing closing frontmatter fence")
+		}
+		fmYAML, tail = rest[:idx+1], rest[idx+1:]
 	}
-	fmYAML := rest[:closingIdx]
-	tail := rest[closingIdx:]
-	// Append bsky_post as the last key (before the closing fence) so it
-	// sits with the other operator-supplied fields without disturbing
-	// the order of existing keys.
-	if !strings.HasSuffix(fmYAML, "\n") {
-		fmYAML += "\n"
+	if first {
+		return opening + line + "\n" + fmYAML + tail, nil
 	}
-	updated := fence + fmYAML + "bsky_post: \"" + atURI + "\"\n" + tail + "\n"
+	return opening + fmYAML + line + "\n" + tail, nil
+}
+
+// writeFileAtomic replaces path via a temp file + rename in the same
+// directory, so a crash mid-write can't leave a truncated post.
+func writeFileAtomic(path, content string) error {
 	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, []byte(updated), 0o644); err != nil {
+	if err := os.WriteFile(tmp, []byte(content), 0o644); err != nil {
 		return fmt.Errorf("write %s: %w", tmp, err)
 	}
 	if err := os.Rename(tmp, path); err != nil {
@@ -148,64 +136,4 @@ func writeBackBskyPost(path, atURI string) error {
 		return fmt.Errorf("rename %s -> %s: %w", tmp, path, err)
 	}
 	return nil
-}
-
-// writeBackRkey inserts an `rkey:` line as the first frontmatter key of
-// src, preserving the rest of the file byte-for-byte (same approach as
-// writeBackID — no yaml re-marshal, so comments and quote styles survive).
-func writeBackRkey(src, rkey string) (string, error) {
-	const fence = "---\n"
-	rest, ok := strings.CutPrefix(src, fence)
-	if !ok {
-		rest, ok = strings.CutPrefix(src, "---\r\n")
-		if !ok {
-			return "", fmt.Errorf("source does not start with --- frontmatter fence")
-		}
-	}
-	closingIdx := strings.Index(rest, "\n---")
-	if closingIdx < 0 {
-		return "", fmt.Errorf("missing closing frontmatter fence")
-	}
-	fmYAML := rest[:closingIdx]
-	tail := rest[closingIdx:]
-	newYAML := "rkey: " + rkey + "\n" + fmYAML
-	if !strings.HasSuffix(newYAML, "\n") {
-		newYAML += "\n"
-	}
-	return fence + newYAML + tail, nil
-}
-
-// writeBackID inserts an `id:` line into the YAML frontmatter of src.
-// The body is the previously-parsed body slice so we can reconstruct
-// the file deterministically.
-//
-// The frontmatter is reconstructed by splitting the original src around
-// the closing fence and inserting "id: <ULID>" as the first frontmatter
-// line. We don't re-marshal via yaml.v3 because that would lose comment
-// preservation and quote-style choices the user made.
-func writeBackID(src, body, id string) (string, error) {
-	const fence = "---\n"
-	rest, ok := strings.CutPrefix(src, fence)
-	if !ok {
-		// Some files might use \r\n; try that too.
-		rest, ok = strings.CutPrefix(src, "---\r\n")
-		if !ok {
-			return "", fmt.Errorf("source does not start with --- frontmatter fence")
-		}
-	}
-	closingIdx := strings.Index(rest, "\n---")
-	if closingIdx < 0 {
-		return "", fmt.Errorf("missing closing frontmatter fence")
-	}
-	fmYAML := rest[:closingIdx]
-	tail := rest[closingIdx:] // starts with "\n---"
-
-	// Insert id as the first key. Trailing newline ensured.
-	newYAML := "id: " + id + "\n" + fmYAML
-	if !strings.HasSuffix(newYAML, "\n") {
-		newYAML += "\n"
-	}
-	_ = body // body unused — we keep the original tail so closing fence
-	// and any blank line between fence and body stay byte-identical.
-	return fence + newYAML + tail + "\n", nil
 }

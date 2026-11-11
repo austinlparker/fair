@@ -16,10 +16,9 @@ func TestState_RoundTrip(t *testing.T) {
 	want := &publish.State{
 		Entries: map[string]publish.StateEntry{
 			"wide-events": {
-				ID:               "01HXTEST",
-				LastHash:         "abc123",
-				LastCoverHash:    "cover456",
-				LastPublishedAt:  time.Date(2025, 4, 17, 0, 0, 0, 0, time.UTC),
+				ID:              "01HXTEST",
+				LastHash:        "abc123",
+				LastPublishedAt: time.Date(2025, 4, 17, 0, 0, 0, 0, time.UTC),
 			},
 		},
 	}
@@ -41,9 +40,6 @@ func TestState_RoundTrip(t *testing.T) {
 	}
 	if entry.LastHash != "abc123" {
 		t.Errorf("LastHash: %q", entry.LastHash)
-	}
-	if entry.LastCoverHash != "cover456" {
-		t.Errorf("LastCoverHash: %q", entry.LastCoverHash)
 	}
 }
 

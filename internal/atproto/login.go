@@ -122,7 +122,7 @@ func Login(ctx context.Context, cfg LoginConfig) (Session, error) {
 
 	// 2. HTTP client. If RootCAs is set, trust only those (sandbox);
 	//    otherwise rely on system trust (production).
-	httpClient := newHTTPClient(cfg.RootCAs)
+	httpClient := NewHTTPClient(cfg.RootCAs)
 
 	// 3. Build the haileyok OAuth client.
 	oauthClient, err := oauth.NewClient(oauth.ClientArgs{
@@ -240,10 +240,10 @@ func Login(ctx context.Context, cfg LoginConfig) (Session, error) {
 	}, nil
 }
 
-// newHTTPClient builds an http.Client. When extraRoots is non-nil, the
-// client trusts ONLY that pool (suitable for sandbox + mkcert). When
-// nil, the client uses the system trust store.
-func newHTTPClient(extraRoots *x509.CertPool) *http.Client {
+// NewHTTPClient builds the http.Client every PDS-facing code path uses.
+// When extraRoots is non-nil, the client trusts ONLY that pool (suitable
+// for sandbox + mkcert). When nil, it uses the system trust store.
+func NewHTTPClient(extraRoots *x509.CertPool) *http.Client {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	if extraRoots != nil {
 		transport.TLSClientConfig = &tls.Config{

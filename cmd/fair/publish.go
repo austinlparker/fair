@@ -1,14 +1,11 @@
 package main
 
 import (
-	"context"
 	"fmt"
 	"os"
-	"os/signal"
 	"path/filepath"
 	"strings"
 
-	"aparker.io/fair/internal/atproto"
 	"aparker.io/fair/internal/publish"
 	"github.com/spf13/cobra"
 )
@@ -50,85 +47,100 @@ func resolveSourcePath(arg, blogPosts string) (string, error) {
 	return "", fmt.Errorf("file not found: %q (tried %s and %s/%s)", arg, abs, blogPosts, arg)
 }
 
-// newPublishCmd builds `fair publish <path/to/post.md>`. Drives the
-// 13-step orchestrator in internal/publish.
+// newPublishCmd builds `fair publish <post.md>...` / `fair publish --all`.
+// Drives the orchestrator in internal/publish once per post.
 func newPublishCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "publish <path-to-post.md>",
-		Short: "Publish a markdown post as a site.standard.document record",
-		Args:  cobra.ExactArgs(1),
+		Use:   "publish <path-to-post.md>... | --all",
+		Short: "Publish markdown posts as site.standard.document records",
+		Args: func(cmd *cobra.Command, args []string) error {
+			all, _ := cmd.Flags().GetBool("all")
+			if all == (len(args) > 0) {
+				return fmt.Errorf("pass one or more post paths, or --all (not both)")
+			}
+			return nil
+		},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			profile, cfg, err := resolveProfileAndLoad(cmd)
+			a, err := newAuthed(cmd)
 			if err != nil {
 				return err
+			}
+			defer a.stop()
+			cfg := a.cfg
+
+			// Checked before any network write: discovering a missing
+			// state path only after a putRecord succeeded would leave
+			// the post published but untracked.
+			if cfg.StateFile == "" {
+				return fmt.Errorf("state_file is not set in the %s profile config", a.profile)
 			}
 
 			dryRun, _ := cmd.Flags().GetBool("dry-run")
 			force, _ := cmd.Flags().GetBool("force")
 			announce, _ := cmd.Flags().GetBool("announce")
-			caBundle, _ := cmd.Flags().GetString("ca-bundle")
 
-			rootCAs, err := atproto.LoadExtraRoots(caBundle)
-			if err != nil {
-				return err
+			var sources []string
+			if all, _ := cmd.Flags().GetBool("all"); all {
+				sources, err = publish.FindPosts(cfg.BlogPosts)
+				if err != nil {
+					return fmt.Errorf("find posts under %s: %w", cfg.BlogPosts, err)
+				}
+			} else {
+				for _, arg := range args {
+					p, err := resolveSourcePath(arg, cfg.BlogPosts)
+					if err != nil {
+						return err
+					}
+					sources = append(sources, p)
+				}
 			}
 
-			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
-			defer stop()
-
-			client, err := newAuthedClient(ctx, cmd, cfg, profile, rootCAs)
-			if err != nil {
-				return err
-			}
-
-			sourcePath, err := resolveSourcePath(args[0], cfg.BlogPosts)
-			if err != nil {
-				return err
-			}
-
-			pubURI := fmt.Sprintf("at://%s/site.standard.publication/self", cfg.DID)
-
-			result, err := publish.Publish(ctx, client, sourcePath, publish.Config{
+			pubCfg := publish.Config{
 				BlogPosts:      cfg.BlogPosts,
 				StateFile:      cfg.StateFile,
 				ImagesMirror:   cfg.ImagesMirror,
-				PublicationURI: pubURI,
+				PublicationURI: fmt.Sprintf("at://%s/site.standard.publication/self", cfg.DID),
 				PublicationURL: cfg.Domain,
 				MaxCoverSize:   1 << 20, // 1 MiB
-			}, publish.Options{
+			}
+			opts := publish.Options{
 				DryRun:   dryRun,
 				Force:    force,
 				Announce: announce,
 				Logger: func(format string, a ...any) {
 					fmt.Fprintf(cmd.OutOrStderr(), "  "+format+"\n", a...)
 				},
-			})
-			if err != nil {
-				return err
 			}
 
+			// Fail fast: posts already published in this run are recorded
+			// in state, so a re-run after fixing the bad post skips them.
 			out := cmd.OutOrStdout()
-			if result.Skipped {
-				fmt.Fprintf(out, "skipped %s (%s)\n", result.Rkey, result.Reason)
-				return nil
-			}
-			if dryRun {
-				fmt.Fprintf(out, "dry-run: %s would be put at site.standard.document/%s\n", result.Rkey, result.Rkey)
-				return nil
-			}
-			fmt.Fprintf(out, "published %s\n", result.URI)
-			if result.BlobUploaded {
-				fmt.Fprintf(out, "  cover blob uploaded\n")
-			}
-			if result.UpdatedAt {
-				fmt.Fprintf(out, "  updatedAt advanced\n")
+			for _, src := range sources {
+				result, err := publish.Publish(a.ctx, a.client, src, pubCfg, opts)
+				if err != nil {
+					return fmt.Errorf("%s: %w", src, err)
+				}
+				switch {
+				case result.Skipped:
+					fmt.Fprintf(out, "skipped %s (%s)\n", result.Rkey, result.Reason)
+				case dryRun:
+					fmt.Fprintf(out, "dry-run: %s would be put at site.standard.document/%s\n", src, result.Rkey)
+				default:
+					fmt.Fprintf(out, "published %s\n", result.URI)
+					if result.BlobUploaded {
+						fmt.Fprintf(out, "  cover blob uploaded\n")
+					}
+					if result.UpdatedAt {
+						fmt.Fprintf(out, "  updatedAt advanced\n")
+					}
+				}
 			}
 			return nil
 		},
 	}
+	cmd.Flags().Bool("all", false, "publish every index.md under blog_posts (unchanged posts are skipped)")
 	cmd.Flags().Bool("dry-run", false, "report what would happen without uploading or putting")
 	cmd.Flags().Bool("force", false, "re-put even when content hash is unchanged")
 	cmd.Flags().Bool("announce", false, "create an app.bsky.feed.post on first publish and pin it as bskyPostRef (the comment-thread root)")
-	cmd.Flags().String("ca-bundle", "", "PEM file containing extra trusted CAs (sandbox: mkcert root)")
 	return cmd
 }

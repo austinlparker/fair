@@ -13,7 +13,7 @@ import (
 // trust mkcert's local CA when running against the sandbox.
 //
 // Returns nil pool if no path was supplied; callers can pass that
-// straight into newHTTPClient to fall back to system roots.
+// straight into NewHTTPClient to fall back to system roots.
 func LoadExtraRoots(paths ...string) (*x509.CertPool, error) {
 	var anyAdded bool
 	pool := x509.NewCertPool()

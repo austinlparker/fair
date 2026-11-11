@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
-	"path/filepath"
-	"strings"
 
 	"aparker.io/fair/internal/atproto"
 	"github.com/spf13/cobra"
@@ -37,30 +35,13 @@ func newAuthLoginCmd() *cobra.Command {
 			}
 
 			handle, _ := cmd.Flags().GetString("handle")
-			caBundle, _ := cmd.Flags().GetString("ca-bundle")
-
-			configDir, _ := cmd.Flags().GetString("config-dir")
-			keyPath := filepath.Join(configDir, "client-key."+profile+".json")
-			clientKey, err := atproto.LoadOrCreateClientKey(keyPath)
+			clientKey, err := loadClientKey(cmd, profile)
 			if err != nil {
 				return err
 			}
-
-			rootCAs, err := atproto.LoadExtraRoots(caBundle)
+			rootCAs, err := loadRootCAs(cmd)
 			if err != nil {
 				return err
-			}
-
-			// Loopback mode (sandbox): use the http://localhost client_id
-			// form so the PDS auto-generates client metadata without
-			// trying to fetch a document. Prod uses the URL of the
-			// metadata document itself (deployed under the profile's
-			// domain by `fair emit-client-metadata` + the build flow).
-			var clientID string
-			if cfg.LoopbackClient {
-				clientID = atproto.LoopbackClientID(atproto.LoopbackRedirectPath)
-			} else {
-				clientID = strings.TrimRight(cfg.Domain, "/") + "/.well-known/oauth-client-metadata.json"
 			}
 
 			// SIGINT-aware context so Ctrl-C during the browser hop
@@ -71,7 +52,7 @@ func newAuthLoginCmd() *cobra.Command {
 			session, err := atproto.Login(ctx, atproto.LoginConfig{
 				PDSURL:    cfg.PDSURL,
 				Handle:    handle,
-				ClientID:  clientID,
+				ClientID:  oauthClientID(cfg),
 				ClientKey: clientKey,
 				RootCAs:   rootCAs,
 			})
@@ -79,8 +60,7 @@ func newAuthLoginCmd() *cobra.Command {
 				return err
 			}
 
-			store := atproto.NewFileStore(filepath.Join(configDir, "sessions"))
-			if err := store.Save(profile, session); err != nil {
+			if err := sessionStore(cmd).Save(profile, session); err != nil {
 				return fmt.Errorf("save session: %w", err)
 			}
 
@@ -92,7 +72,6 @@ func newAuthLoginCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().String("handle", "", "optional login_hint for the OAuth authorize page")
-	cmd.Flags().String("ca-bundle", "", "PEM file containing extra trusted CAs (sandbox: mkcert root)")
 	return cmd
 }
 
@@ -106,9 +85,7 @@ func newAuthLogoutCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			configDir, _ := cmd.Flags().GetString("config-dir")
-			store := atproto.NewFileStore(filepath.Join(configDir, "sessions"))
-			if err := store.Delete(profile); err != nil {
+			if err := sessionStore(cmd).Delete(profile); err != nil {
 				return err
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "logged out of profile %q\n", profile)
@@ -127,9 +104,7 @@ func newAuthStatusCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			configDir, _ := cmd.Flags().GetString("config-dir")
-			store := atproto.NewFileStore(filepath.Join(configDir, "sessions"))
-			session, err := store.Load(profile)
+			session, err := sessionStore(cmd).Load(profile)
 			if err != nil {
 				return err
 			}
@@ -138,7 +113,7 @@ func newAuthStatusCmd() *cobra.Command {
 			fmt.Fprintf(out, "did:        %s\n", session.DID)
 			fmt.Fprintf(out, "pds:        %s\n", session.PDSURL)
 			fmt.Fprintf(out, "issuer:     %s\n", session.AuthServerIssuer)
-			fmt.Fprintf(out, "expires:    %s\n", session.ExpiresAt.Format("2006-01-02 15:04:05 MST"))
+			fmt.Fprintf(out, "expires:    %s (access token; refreshed automatically)\n", session.ExpiresAt.Format("2006-01-02 15:04:05 MST"))
 			return nil
 		},
 	}

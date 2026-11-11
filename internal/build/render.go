@@ -56,19 +56,13 @@ func resolveRelativeURLs(html, publicationURL string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	// Match src="/..." and href="/..." (the leading / disambiguates
-	// from anchors and protocol-relative URLs).
-	re := regexp.MustCompile(`(src|href)="(/[^"]*)"`)
-	return re.ReplaceAllStringFunc(html, func(match string) string {
-		parts := re.FindStringSubmatch(match)
-		if len(parts) != 3 {
-			return match
-		}
-		attr := parts[1]
-		path := parts[2]
-		return fmt.Sprintf(`%s="%s%s"`, attr, pub.String(), path)
-	}), nil
+	return siteRelativeAttrRe.ReplaceAllString(html, `${1}="`+strings.ReplaceAll(pub.String(), "$", "$$")+`${2}"`), nil
 }
+
+// siteRelativeAttrRe matches src="/..." and href="/...". The second
+// character must not be another slash: "//host/path" is a
+// protocol-relative URL to a different origin, not a site path.
+var siteRelativeAttrRe = regexp.MustCompile(`\b(src|href)="(/(?:[^/"][^"]*)?)"`)
 
 // blueskyBlockquoteRe matches blockquotes carrying our convention
 // data-bluesky-uri="at://..." marker. Everything inside the quote is

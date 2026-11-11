@@ -29,6 +29,7 @@ func newRootCmd() *cobra.Command {
 	}
 	root.PersistentFlags().String("profile", "", "named profile (or set FAIR_PROFILE)")
 	root.PersistentFlags().String("config-dir", defaultConfigDir(), "directory containing config.<profile>.toml files")
+	root.PersistentFlags().String("ca-bundle", "", "PEM file containing extra trusted CAs (sandbox: mkcert root)")
 
 	root.AddCommand(newConfigCmd())
 	root.AddCommand(newEmitClientMetadataCmd())

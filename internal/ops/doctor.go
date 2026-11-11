@@ -2,10 +2,10 @@ package ops
 
 import (
 	"context"
-	"crypto/tls"
 	"crypto/x509"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -47,12 +47,7 @@ func Doctor(ctx context.Context, opts DoctorOptions) []Check {
 		Detail: fmt.Sprintf("profile=%s pds=%s domain=%s", opts.Profile, opts.Cfg.PDSURL, opts.Cfg.Domain),
 	})
 
-	hc := &http.Client{Timeout: 10 * time.Second}
-	if opts.RootCAs != nil {
-		t := http.DefaultTransport.(*http.Transport).Clone()
-		t.TLSClientConfig = &tls.Config{RootCAs: opts.RootCAs}
-		hc.Transport = t
-	}
+	hc := atproto.NewHTTPClient(opts.RootCAs)
 
 	// 2. PDS reachable.
 	pdsHealth := strings.TrimRight(opts.Cfg.PDSURL, "/") + "/xrpc/_health"
@@ -60,18 +55,24 @@ func Doctor(ctx context.Context, opts DoctorOptions) []Check {
 
 	// 3. Publication record present.
 	pubURL := fmt.Sprintf("%s/xrpc/com.atproto.repo.getRecord?repo=%s&collection=site.standard.publication&rkey=self",
-		strings.TrimRight(opts.Cfg.PDSURL, "/"), opts.Cfg.DID)
+		strings.TrimRight(opts.Cfg.PDSURL, "/"), url.QueryEscape(opts.Cfg.DID))
 	checks = append(checks, httpCheck(ctx, hc, "publication record exists", pubURL))
 
-	// 4. Auth session present and not expired.
+	// 4. Auth session present and for the configured identity. An
+	//    expired access token is the normal resting state (they live
+	//    minutes; the next authenticated command refreshes silently),
+	//    so it isn't a failure. Whether the refresh token is still good
+	//    can't be known without spending it.
 	session, err := opts.Store.Load(opts.Profile)
 	switch {
 	case err != nil:
 		checks = append(checks, Check{Name: "auth session", OK: false, Detail: "no session — run `fair auth login`"})
+	case session.DID != opts.Cfg.DID:
+		checks = append(checks, Check{Name: "auth session", OK: false, Detail: fmt.Sprintf("session is for %s but config did is %s", session.DID, opts.Cfg.DID)})
 	case session.IsExpired(time.Now()):
-		checks = append(checks, Check{Name: "auth session", OK: false, Detail: "session expired — re-run `fair auth login`"})
+		checks = append(checks, Check{Name: "auth session", OK: true, Detail: fmt.Sprintf("did=%s (access token expired; refreshes on next use)", session.DID)})
 	default:
-		checks = append(checks, Check{Name: "auth session", OK: true, Detail: fmt.Sprintf("did=%s expires=%s", session.DID, session.ExpiresAt.Format(time.RFC3339))})
+		checks = append(checks, Check{Name: "auth session", OK: true, Detail: fmt.Sprintf("did=%s access token expires=%s", session.DID, session.ExpiresAt.Format(time.RFC3339))})
 	}
 
 	// 5. State.json consistency.
@@ -85,7 +86,7 @@ func Doctor(ctx context.Context, opts DoctorOptions) []Check {
 	return checks
 }
 
-// httpCheck performs a HEAD/GET against url and reports the result as
+// httpCheck performs a GET against url and reports the result as
 // a Check.
 func httpCheck(ctx context.Context, hc *http.Client, name, url string) Check {
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
