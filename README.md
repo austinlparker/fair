@@ -16,10 +16,15 @@ your site does.
 - **PDS canonical.** Site renders from `site.standard.document` records,
   not from your local markdown.
 - **OAuth (loopback + DPoP).** Native ATProto OAuth flow against your
-  PDS. No app passwords.
+  PDS for interactive use. Headless runs (CI) can use an app password
+  via `FAIR_APP_PASSWORD` instead.
+- **GitHub Action.** Publish and build on push to your content repo —
+  see [`docs/github-actions.md`](docs/github-actions.md).
 - **Idempotent publish.** SHA-256 over canonical inputs (markdown body +
   sorted/deduped tags + cover-source-hash); `--dry-run` and `--force`
-  available.
+  available. On a machine with no local state, the comparison falls
+  back to the record on the PDS, so a fresh checkout doesn't re-put
+  everything.
 - **Pure HTML output.** Semantic markup, native widgets (`<details>`,
   `<progress>`, `<meter>`, `<figure>`, etc.), browser default styling.
   The only CSS shipped is a two-rule inline block — one constrains the
@@ -106,9 +111,9 @@ wrangler pages deploy dist/
 | `auth logout` | Clear the session |
 | `init publication` | Create/update the singleton `site.standard.publication/self` record |
 | `emit-client-metadata --out <dir>` | Write OAuth client metadata JSON |
-| `publish <path>` | Publish a markdown post (`--dry-run`, `--force` available) |
+| `publish <path>...` | Publish one or more posts, or every post with `--all` (`--dry-run`, `--force`, `--announce` available) |
 | `build` | Render all PDS records to `dist/` (no auth required) |
-| `ls` | Diff PDS records against local markdown |
+| `ls` | Diff PDS records against local markdown (matched by frontmatter `rkey`) |
 | `doctor` | Five-check health report |
 | `unpublish <rkey>` | Delete a `site.standard.document` record |
 | `config show` | Print loaded config for the active profile |
@@ -160,10 +165,12 @@ internal/build/       # PDS records → dist/ HTML rendering
 internal/config/      # TOML config + profile resolution
 internal/markdown/    # Normalize + frontmatter + hash + goldmark parser
 internal/ops/         # ls, doctor, unpublish
-internal/publish/     # 13-step publish orchestrator + building blocks
+internal/publish/     # publish orchestrator + building blocks
 sandbox/              # Local PDS Docker compose + Caddy + scripts
 docs/design-plans/    # Validated architecture
 docs/runbook.md          # First-deploy runbook
+docs/github-actions.md   # Publishing from CI
+action.yml               # Composite GitHub Action (publish + build)
 ```
 
 ## License

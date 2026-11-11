@@ -1,0 +1,117 @@
+name: fair publish
+description: >-
+  Publish markdown posts to an ATProto PDS as standard.site records with
+  fair, commit the write-backs, and optionally build the static site.
+branding:
+  icon: feather
+  color: gray-dark
+
+inputs:
+  config:
+    description: >-
+      Path to a fair profile config (TOML) in the calling repository.
+      Relative paths inside it resolve against working-directory.
+    required: true
+  app-password:
+    description: >-
+      ATProto app password for the account named by `did` in the config.
+      Pass a secret; never a literal.
+    required: true
+  working-directory:
+    description: Directory fair runs in (usually the content repo root).
+    default: .
+  announce:
+    description: Create a Bluesky announce post for posts that don't have one yet.
+    default: "false"
+  build:
+    description: Run `fair build` after publishing. Output lands in the config's dist_dir.
+    default: "true"
+  commit:
+    description: >-
+      Commit and push fair's write-backs (frontmatter rkey/id/bsky_post
+      and staged images). Needs `contents: write`. Turning this off is
+      only safe if every post already has an rkey committed.
+    default: "true"
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-go@v5
+      with:
+        go-version-file: ${{ github.action_path }}/go.mod
+        cache-dependency-path: ${{ github.action_path }}/go.sum
+
+    - name: Build fair
+      shell: bash
+      working-directory: ${{ github.action_path }}
+      run: |
+        mkdir -p "$RUNNER_TEMP/fair/bin" "$RUNNER_TEMP/fair/config"
+        go build -o "$RUNNER_TEMP/fair/bin/fair" ./cmd/fair
+
+    - name: Install config
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        FAIR_CONFIG: ${{ inputs.config }}
+      run: |
+        cp "$FAIR_CONFIG" "$RUNNER_TEMP/fair/config/config.ci.toml"
+        {
+          echo "FAIR_PROFILE=ci"
+          echo "FAIR_BIN=$RUNNER_TEMP/fair/bin/fair"
+          echo "FAIR_CONFIG_DIR=$RUNNER_TEMP/fair/config"
+        } >> "$GITHUB_ENV"
+
+    # Record keys are assigned and committed BEFORE anything is put on the
+    # PDS. If they were only committed afterwards, a failed push would
+    # leave published posts with no rkey in git, and the next run would
+    # publish them again under new keys.
+    - name: Assign record keys and stage images
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        FAIR_APP_PASSWORD: ${{ inputs.app-password }}
+      run: '"$FAIR_BIN" --config-dir "$FAIR_CONFIG_DIR" publish --all --dry-run'
+
+    - name: Commit record keys
+      if: inputs.commit == 'true'
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: |
+        git config user.name "github-actions[bot]"
+        git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+        git add -A
+        if ! git diff --cached --quiet; then
+          git commit -m "fair: assign record keys"
+          git push
+        fi
+
+    - name: Publish
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        FAIR_APP_PASSWORD: ${{ inputs.app-password }}
+        FAIR_ANNOUNCE: ${{ inputs.announce }}
+      run: |
+        flags=(--all)
+        if [ "$FAIR_ANNOUNCE" = "true" ]; then flags+=(--announce); fi
+        "$FAIR_BIN" --config-dir "$FAIR_CONFIG_DIR" publish "${flags[@]}"
+
+    # Runs even when Publish failed partway: if an announce post was
+    # created, its at-uri is already in frontmatter, and losing that
+    # would announce the same article again on the next run.
+    - name: Commit write-backs
+      if: always() && inputs.commit == 'true'
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: |
+        git add -A
+        if ! git diff --cached --quiet; then
+          git commit -m "fair: record publish write-backs"
+          git push
+        fi
+
+    - name: Build site
+      if: inputs.build == 'true'
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: '"$FAIR_BIN" --config-dir "$FAIR_CONFIG_DIR" build'

@@ -88,12 +88,12 @@ preview: build-site
 	@echo "Serving dist.$(PROFILE)/ at http://localhost:8000/"
 	python3 -m http.server 8000 --directory dist.$(PROFILE)
 
-# --- Tangled push (after the remote is configured) -------------------------
+# --- Push to origin (tangled) and the GitHub mirror -------------------------
 
-.PHONY: push-tangled
-push-tangled:
-	git push tangled --all
-	git push tangled --tags
+.PHONY: push
+push:
+	git push origin main --tags
+	git push github main --tags
 
 # --- Cleanup ---------------------------------------------------------------
 

@@ -84,7 +84,7 @@ curl -fsS https://example.com/.well-known/oauth-client-metadata.json | jq .clien
 ```
 
 The browser opens to your PDS's OAuth consent page; review the requested
-scopes (atproto + repo:site.standard.* + blob), approve, redirect lands
+scopes (atproto + repo:site.standard.* + repo:app.bsky.feed.post + image blobs), approve, redirect lands
 on the loopback. `auth status` should now show your DID.
 
 ## 4. Create the publication record
@@ -102,8 +102,8 @@ for d in /path/to/blog-posts/*/; do
 done
 ```
 
-Each first publish writes a ULID back to the markdown frontmatter AND
-copies inline image bytes into `<blog-posts>/images-mirror/<slug>/`.
+Each first publish writes an `id` (ULID) and `rkey` (TID record key)
+back to the markdown frontmatter AND copies inline image bytes into `<blog-posts>/images-mirror/<slug>/`.
 Commit both back to the blog-posts repo after this loop:
 
 ```bash
@@ -121,8 +121,9 @@ Watch for:
   retry the affected post.
 - **Slug grammar errors**: directory names must match `[a-z0-9-]+`. Rename
   directories (or set explicit `slug:` in frontmatter) before publishing.
-- **Reserved slugs**: `self`, `index`, `feed`, `sitemap`, `.well-known` are
-  rejected.
+- **Reserved slugs**: `self`, `index`, `feed`, `sitemap`, `.well-known`,
+  `tags`, `archive`, `images`, `covers` are rejected (they collide with
+  paths the build emits).
 
 ## 6. Final build + deploy
 
@@ -133,12 +134,10 @@ wrangler pages deploy dist/ --project-name=<your-pages-project>
 
 Build runs entirely locally — `fair build` reads public records from
 the PDS (no auth needed) and writes `dist/`. The deploy step is
-`wrangler` from your laptop. Two reasons we don't ship CI for this:
-publishing already requires the laptop (OAuth session lives there),
-and the build is fast enough that `build && deploy` is one shell
-command. If you eventually want hands-off rebuilds (e.g., to pick up
-out-of-band PDS edits), see the dedicated cron-Worker / Jetstream
-options in the design plan.
+`wrangler` from your laptop. To publish, build, and deploy on push
+instead, see [`github-actions.md`](github-actions.md). For hands-off
+rebuilds that pick up out-of-band PDS edits, see the cron-Worker /
+Jetstream options in the design plan.
 
 ## 7. Verify
 
@@ -172,5 +171,7 @@ deployed site. To roll back the deployment, redeploy the previous
 records, `./fair --profile prod ls`, then `./fair unpublish <rkey>` for
 each `site.standard.document` record you want to remove.
 
-If frontmatter ULIDs got written back during a failed run, they're
-harmless — re-running `fair publish` will reuse them as rkeys.
+If `id`/`rkey` got written back to frontmatter during a failed run,
+they're harmless — re-running `fair publish` reuses them. Do commit
+them: the `rkey` is what makes a re-publish update the same record
+instead of creating a second one.

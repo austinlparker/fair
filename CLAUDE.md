@@ -1,6 +1,6 @@
 # fair
 
-Last reviewed: 2026-04-30 (images-mirror lives in content repo for prod)
+Last reviewed: 2026-11-11 (architecture cleanup pass)
 
 A Go CLI that publishes markdown posts to an ATProto PDS as `standard.site`
 lexicon records, then renders them as plain HTML for static deploy.
@@ -41,7 +41,7 @@ recommended first-deploy path.
 ## Subcommands
 
 `fair --profile <name> <verb>` — see README for full usage. One-line reminder:
-`auth login|logout|status`, `init publication`, `publish <path>`,
+`auth login|logout|status`, `init publication`, `publish <path>...|--all`,
 `unpublish <rkey>`, `build`, `ls`, `doctor`, `config show`,
 `emit-client-metadata <out>`.
 
@@ -57,15 +57,22 @@ recommended first-deploy path.
 
 ## Auto-token-refresh (every authenticated subcommand)
 
-`cmd/fair/profile.go:newAuthedClient` is the single entry point for any
-subcommand that needs authenticated XRPC. It loads the persisted session,
-the persistent ECDSA client signing key, computes `client_id` (loopback for
-sandbox, metadata-URL for prod), and calls `Client.RefreshIfNeeded` — no-op
-when fresh, silent token rotation otherwise. Failures surface as
-"please re-login" errors that name the exact command to run.
+`cmd/fair/profile.go:newAuthed` is the single entry point for any
+subcommand that needs authenticated XRPC. It resolves the profile, loads
+the persisted session and the persistent ECDSA client signing key,
+computes `client_id` (`oauthClientID`: loopback for sandbox, metadata-URL
+for prod), and calls `Client.RefreshIfNeeded` — no-op when fresh, silent
+token rotation otherwise. Failures surface as "please re-login" errors
+that name the exact command to run.
+
+With `FAIR_APP_PASSWORD` set, `newAuthed` instead signs in as the
+profile's `did` via `createSession` (`atproto.NewAppPasswordClient`):
+bearer token, nothing persisted, no refresh. That mode exists for CI
+(`action.yml`, `docs/github-actions.md`). The secret is env-only on
+purpose — don't add a flag for it.
 
 **Do not call `atproto.NewClient` directly from a subcommand** — go through
-`newAuthedClient` so refresh stays automatic. `cmd/fair/auth.go` is the only
+`newAuthed` so refresh stays automatic. `cmd/fair/auth.go` is the only
 caller of `atproto.Login` (it *creates* the session rather than using one).
 
 ## Hash determinism (do not break casually)
@@ -202,13 +209,18 @@ JSON Feed, `index.json`, tag pages, archive, and copies `ImagesMirror`
 into `dist.tmp/images/` before atomic-promoting `dist.tmp` → `dist`.
 
 Templates live in `internal/build/templates/`, embedded via `embed.FS`.
-HTML templates use `html/template` (auto-escaping); XML/JSON templates use
-`text/template` so XML declarations and JSON braces survive intact.
+HTML templates use `html/template` (auto-escaping). XML templates use
+`text/template` so the XML declaration survives — which means **no
+auto-escaping**: every text value must go through `{{html ...}}` and
+CDATA bodies through `{{cdata ...}}`. JSON outputs (feed.json,
+index.json, the well-known publication doc) are marshaled, not templated.
 
 ## OAuth scopes (changing this list can invalidate sessions)
 
 `internal/atproto.BlogScopes` is the single source of truth:
-`atproto repo:site.standard.publication repo:site.standard.document repo:app.bsky.feed.post blob`.
+`atproto repo:site.standard.publication repo:site.standard.document repo:app.bsky.feed.post blob:image/png blob:image/jpeg blob:image/webp`
+(blob scopes need a mime parameter; cover uploads are limited to those
+three types and `publish` rejects anything else up front).
 Adding a new collection here means existing sessions are missing the new
 scope and need re-login (subset removals are fine — existing tokens
 gracefully retain access to scopes they were issued under). When adding
@@ -251,8 +263,10 @@ without a webserver setup.
 ## Test layout
 
 - Unit tests live next to the code (`*_test.go` in the same package).
-- Integration tests against the sandbox PDS are gated behind `//go:build sandbox`.
-  They require `sandbox/seed.sh` to have run first.
+- The publish and build orchestrators are tested against fakes:
+  `publish.Publish` takes the `publish.PDS` interface, `build.Build`
+  runs against an `httptest` PDS. There are no sandbox-gated integration
+  tests yet; if you add some, gate them behind `//go:build sandbox`.
 - Cobra tests build a fresh root via `newRootCmd()` per invocation; preserve that.
 
 ## Home-page customization (`_index.md`, `_outro.md`)
@@ -329,7 +343,23 @@ doesn't exist. See `internal/build/build.go` for the wiring.
 - `EmitClientMetadata` derives `client_id` from the profile's `domain` field;
   half-configured (empty domain) returns an error rather than silently writing
   a bad doc.
-- `publish.EnsureID` writes the ULID `id` back into the source markdown
-  frontmatter. The source IS mutated in `--dry-run` for that one field —
-  rkeys must be stable across runs even when nothing else gets uploaded.
+- `publish.EnsureID` / `EnsureRkey` write `id` and the TID `rkey` back
+  into the source markdown frontmatter, and `--dry-run` still does both
+  (plus staging inline images into the mirror) — the rkey must be stable
+  across runs even when nothing gets uploaded. Only remote calls and the
+  state file are skipped.
+- The state file is a cache, not a source of truth. With no entry for
+  a post, `publish` fetches the record at the post's rkey and compares
+  author-controlled fields (`matchesPublished`; cover by locally
+  computed blob CID). A match is adopted into state and skipped; a
+  mismatch is an update. Derived fields (`textContent`) aren't compared.
+- `putRecord` replaces the whole record. Anything `publish` doesn't put
+  in the map it builds is deleted from the PDS record — which is why the
+  cover blob is re-uploaded on every real publish and `updatedAt` is set
+  on every re-put.
+- `fair ls` matches local posts to PDS records by frontmatter `rkey`,
+  not through the state file, so it works on a fresh checkout.
+- `build` treats only an explicit `RecordNotFound` for the publication
+  as a cold start. Any other PDS error aborts and leaves `dist` alone.
+- `--ca-bundle` is a persistent root flag (works on every subcommand).
 - Windows is unsupported for sandbox; prod-side commands are fine. Use WSL2.
